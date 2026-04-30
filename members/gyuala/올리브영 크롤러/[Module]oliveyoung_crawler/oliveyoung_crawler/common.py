@@ -241,22 +241,51 @@ def parse_volume_package(volume_text: str, product_name: str = "") -> dict[str, 
     }
 
     # 30ml, 50 mL, 100g 같은 패턴 찾기
-    match = re.search(r"(\d+(?:\.\d+)?)\s*(ml|mL|ML|g|G)", text)
+    matches = list(re.finditer(r"(\d+(?:\.\d+)?)\s*(ml|mL|ML|g|G)", text))
 
-    if not match:
+    if not matches:
         return result
 
-    value = float(match.group(1))
-    unit = match.group(2).lower()
+    first_match = matches[0]
+    unit = first_match.group(2).lower()
 
-    # x2, X 2, ×2, 2개 같은 구성 수량 찾기
-    quantity = 1
-    quantity_match = re.search(r"[xX×]\s*(\d+)|(\d+)\s*개", text)
+    same_unit_matches = [
+        match
+        for match in matches
+        if match.group(2).lower() == unit
+    ]
 
-    if quantity_match:
-        quantity = int(quantity_match.group(1) or quantity_match.group(2))
+    def quantity_after(match: re.Match[str]) -> int:
+        tail = text[match.end(): match.end() + 16]
+        quantity_match = re.search(r"^\s*(?:[xX×*]\s*(\d+)|(\d+)\s*개)", tail)
 
-    total_value = value * quantity
+        if quantity_match:
+            return int(quantity_match.group(1) or quantity_match.group(2))
+
+        return 1
+
+    if len(same_unit_matches) > 1 and re.search(r"\+|본품|리필|증정|기획", text):
+        total_value = sum(
+            float(match.group(1)) * quantity_after(match)
+            for match in same_unit_matches
+        )
+        value = float(first_match.group(1))
+        quantity = sum(quantity_after(match) for match in same_unit_matches)
+    else:
+        value = float(first_match.group(1))
+        quantity = quantity_after(first_match)
+
+        # [1+1] 30ml처럼 용량 뒤에 수량이 붙지 않는 기획 구성도 반영합니다.
+        event_quantity_match = re.search(r"(?<!\d)(\d+)\s*\+\s*(\d+)(?!\d)", text)
+
+        if quantity == 1 and event_quantity_match:
+            left_quantity = int(event_quantity_match.group(1))
+            right_quantity = int(event_quantity_match.group(2))
+
+            if left_quantity <= 5 and right_quantity <= 5:
+                quantity = left_quantity + right_quantity
+
+        total_value = value * quantity
 
     result.update(
         {

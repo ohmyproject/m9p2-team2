@@ -60,7 +60,7 @@ class ProductCrawlConfig:
     """
 
     # 몇 페이지까지 수집할지
-    total_pages: int = 1
+    total_pages: int = 2
 
     # 최대 상품 수
     # None이면 제한 없음
@@ -73,8 +73,8 @@ class ProductCrawlConfig:
     middle_category: str = "에센스/세럼/앰플"
 
     # 수집할 정렬 기준
-    # 예: "best" 또는 "hot,new"
-    sorts: str = "best"
+    # 예: "best" 또는 "best,new"
+    sorts: str = "best,new"
 
     # 중간 저장 간격
     interim_save_interval: int = 50

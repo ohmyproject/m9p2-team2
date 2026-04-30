@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -51,6 +52,57 @@ DETAIL_IMAGE_SELECTORS = [
     "[class*='Description'] img",
     "[class*='detail'] img",
 ]
+
+PRODUCT_DEDUPE_WORDS = [
+    "단독기획",
+    "한정기획",
+    "더블기획",
+    "듀오기획",
+    "리필기획",
+    "대용량기획",
+    "기획",
+    "더블",
+    "듀오",
+    "리필팩",
+    "리필",
+    "본품",
+    "증정",
+    "대용량",
+    "리뉴얼",
+    "NEW",
+    "new",
+]
+
+
+def normalize_product_dedupe_key(product_name: str, brand: str = "") -> str:
+    """
+    용량/기획 구성만 다른 같은 상품을 하나로 묶기 위한 비교 키를 만듭니다.
+
+    예:
+    [트러블모공] 디오디너리 나이아신아마이드 10% + 징크 1% 30ml
+    [트러블모공] 디오디너리 나이아신아마이드 10% + 징크 1% 60ml
+    -> 같은 키
+    """
+    text = clean_text(product_name).lower()
+    brand_text = clean_text(brand).lower()
+
+    if not text:
+        return ""
+
+    text = re.sub(r"\[[^\]]*\]", " ", text)
+    text = re.sub(r"\([^)]*\)", " ", text)
+    text = re.sub(r"\d+(?:\.\d+)?\s*(?:ml|mL|ML|g|G)\b", " ", text)
+    text = re.sub(r"\d+\s*(?:매입|매|개입|개|입|종|병)\b", " ", text)
+    text = re.sub(r"\b\d+\s*\+\s*\d+\b", " ", text)
+
+    for word in PRODUCT_DEDUPE_WORDS:
+        text = re.sub(re.escape(word.lower()), " ", text)
+
+    text = re.sub(r"[^0-9a-z가-힣%+]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    brand_text = re.sub(r"[^0-9a-z가-힣]+", "", brand_text)
+
+    return f"{brand_text}:{text}" if brand_text else text
 
 
 def with_page(url: str, page: int) -> str:
@@ -311,12 +363,21 @@ def parse_product_cards(
         if not product_key:
             product_key = link
 
+        brand_name = brand_tag.get_text(strip=True) if brand_tag else ""
+        product_name = name_tag.get_text(strip=True) if name_tag else ""
+        dedupe_name_key = normalize_product_dedupe_key(product_name, brand_name)
+        seen_keys = [
+            f"goods:{product_key}" if product_key else "",
+            f"name:{dedupe_name_key}" if dedupe_name_key else "",
+        ]
+
         # 같은 상품 중복 수집 방지
-        if product_key and product_key in seen_product_keys:
+        if any(key and key in seen_product_keys for key in seen_keys):
             continue
 
-        if product_key:
-            seen_product_keys.add(product_key)
+        for key in seen_keys:
+            if key:
+                seen_product_keys.add(key)
 
         list_price = (
             clean_text(price_org_tag.get_text(strip=True)).replace(",", "")
@@ -349,8 +410,8 @@ def parse_product_cards(
                 "중카테고리": middle_category,
                 "카테고리": f"{major_category} > {middle_category}",
                 "상품번호": product_key,
-                "브랜드": brand_tag.get_text(strip=True) if brand_tag else "",
-                "상품명": name_tag.get_text(strip=True) if name_tag else "",
+                "브랜드": brand_name,
+                "상품명": product_name,
                 "정가": list_price,
                 "할인가": sale_price,
                 "할인율": discount_rate,

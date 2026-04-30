@@ -13,7 +13,13 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 from .browser import create_driver, safe_quit_driver, wait_for_oliveyoung_access
 from .category import select_category
-from .common import clean_text, make_output_path, now_iso, parse_sorts
+from .common import (
+    clean_text,
+    make_output_path,
+    now_iso,
+    parse_sorts,
+    parse_volume_package,
+)
 from .config import ProductCrawlConfig, ROOT_DIR
 from .product_parser import (
     build_detail_dict,
@@ -38,18 +44,22 @@ from .product_parser import (
 # ============================================================
 
 PRODUCT_INFO_COLUMNS = [
+    "date",
+    "platform",
+    "sort_type",
+    "rank",
     "product_name",
     "brand",
+    "volume_ml",
     "regular_price",
     "discount",
     "sales_price",
     "rating",
     "review_count",
-    "url",
-    "ingredients",
     "main_ingredients",
+    "ingredients",
     "ing_source",
-    "crawled_at",
+    "url",
 ]
 
 OPENAI_ENV_LOADED = False
@@ -257,26 +267,67 @@ def get_series(df: pd.DataFrame, column: str) -> pd.Series:
     return pd.Series([""] * len(df), index=df.index)
 
 
+def crawl_date(value) -> str:
+    """
+    ISO 수집일시에서 YYYY-MM-DD 날짜만 꺼냅니다.
+    """
+    text = clean_text(value)
+
+    if not text:
+        return ""
+
+    return text[:10]
+
+
+def volume_ml_from_fields(volume_text, product_name) -> str:
+    """
+    상세페이지 용량값을 우선 사용하고, 없으면 상품명에서 mL 용량을 보조 추출합니다.
+    """
+    package = parse_volume_package(
+        volume_text=clean_text(volume_text),
+        product_name=clean_text(product_name),
+    )
+
+    unit = clean_text(package.get("unit_volume_unit")).lower()
+    value = package.get("total_volume_value")
+
+    if unit != "ml" or value is None:
+        return ""
+
+    try:
+        return f"{float(value):g}"
+    except Exception:
+        return clean_text(value)
+
+
 def to_product_info_df(df: pd.DataFrame) -> pd.DataFrame:
     """
     내부 수집용 컬럼을 요청받은 제품 CSV 스키마로 변환합니다.
     """
-    output = pd.DataFrame(
-        {
-            "product_name": get_series(df, "상품명"),
-            "brand": get_series(df, "브랜드"),
-            "regular_price": get_series(df, "정가"),
-            "discount": get_series(df, "할인율"),
-            "sales_price": get_series(df, "할인가"),
-            "rating": get_series(df, "제품평점"),
-            "review_count": get_series(df, "전체리뷰수"),
-            "url": get_series(df, "상품링크"),
-            "ingredients": get_series(df, "전성분"),
-            "main_ingredients": get_series(df, "주요성분"),
-            "ing_source": get_series(df, "전성분").map(ingredient_source),
-            "crawled_at": get_series(df, "수집일시"),
-        }
-    )
+    product_names = get_series(df, "상품명")
+    volume_values = get_series(df, "용량")
+    ingredients = get_series(df, "전성분")
+
+    output = pd.DataFrame(index=df.index)
+    output["date"] = get_series(df, "수집일시").map(crawl_date)
+    output["platform"] = "oliveyoung"
+    output["sort_type"] = get_series(df, "정렬")
+    output["rank"] = get_series(df, "순위")
+    output["product_name"] = product_names
+    output["brand"] = get_series(df, "브랜드")
+    output["volume_ml"] = [
+        volume_ml_from_fields(volume_text, product_name)
+        for volume_text, product_name in zip(volume_values, product_names)
+    ]
+    output["regular_price"] = get_series(df, "정가")
+    output["discount"] = get_series(df, "할인율")
+    output["sales_price"] = get_series(df, "할인가")
+    output["rating"] = get_series(df, "제품평점")
+    output["review_count"] = get_series(df, "전체리뷰수")
+    output["url"] = get_series(df, "상품링크")
+    output["main_ingredients"] = get_series(df, "주요성분")
+    output["ingredients"] = ingredients
+    output["ing_source"] = ingredients.map(ingredient_source)
 
     return output[PRODUCT_INFO_COLUMNS].fillna("")
 
