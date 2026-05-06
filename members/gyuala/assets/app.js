@@ -54,12 +54,12 @@
     stable: "관찰",
   };
   const STATUS_COLORS = {
-    growth: "#22c55e",
-    shortage: "#ef4444",
-    opportunity: "#14b8a6",
-    oversupply: "#f59e0b",
-    stable: "#64748b",
-  };
+  growth: "#5AAA6E",      // 성장: 연두
+  shortage: "#D96A7A",    // 공급 부족: 로즈핑크
+  opportunity: "#3FA7B5", // 기회: 하늘/청록
+  oversupply: "#C97A9B",  // 공급 과열: 분홍
+  stable: "#7B8493",      // 관찰: 회색
+};
 
   function qs(selector) {
     return document.querySelector(selector);
@@ -416,8 +416,8 @@
       marker: {
         size: items.map((item) => item.size),
         color: items.map((item) => STATUS_COLORS[item.status]),
-        opacity: 0.88,
-        line: { color: "#ffffff", width: 1.5 },
+        opacity: 0.9,
+        line: { color: "rgba(255,255,255,.92)", width: 2 },
       },
       customdata: items.map((item) => [
         STATUS_LABELS[item.status],
@@ -437,17 +437,27 @@
       xaxis: { title: "공급 지수", range: [20, 100], gridcolor: "#eef2f7" },
       yaxis: { title: "수요 지수", range: [25, 105], gridcolor: "#eef2f7" },
       shapes: [
-        { type: "rect", x0: 20, x1: 55, y0: 65, y1: 105, fillcolor: "rgba(20,184,166,.12)", line: { width: 0 }, layer: "below" },
-        { type: "rect", x0: 55, x1: 100, y0: 65, y1: 105, fillcolor: "rgba(37,99,235,.10)", line: { width: 0 }, layer: "below" },
-        { type: "rect", x0: 20, x1: 55, y0: 25, y1: 65, fillcolor: "rgba(100,116,139,.10)", line: { width: 0 }, layer: "below" },
-        { type: "rect", x0: 55, x1: 100, y0: 25, y1: 65, fillcolor: "rgba(249,115,22,.12)", line: { width: 0 }, layer: "below" },
-        { type: "line", x0: 55, x1: 55, y0: 25, y1: 105, line: { color: "#cbd5e1", width: 1, dash: "dot" } },
-        { type: "line", x0: 20, x1: 100, y0: 65, y1: 65, line: { color: "#cbd5e1", width: 1, dash: "dot" } },
-      ],
+        // 좌상단: 기회 영역
+        { type: "rect", x0: 20, x1: 55, y0: 65, y1: 105, fillcolor: "rgba(63, 167, 181, .10)", line: { width: 0 }, layer: "below" },
+
+        // 우상단: 성장 영역
+        { type: "rect", x0: 55, x1: 100, y0: 65, y1: 105, fillcolor: "rgba(90, 170, 110, .11)", line: { width: 0 }, layer: "below" },
+
+        // 좌하단: 관찰 영역
+        { type: "rect", x0: 20, x1: 55, y0: 25, y1: 65, fillcolor: "rgba(123, 132, 147, .08)", line: { width: 0 }, layer: "below" },
+
+        // 우하단: 공급 과열 영역
+        { type: "rect", x0: 55, x1: 100, y0: 25, y1: 65, fillcolor: "rgba(201, 122, 155, .10)", line: { width: 0 }, layer: "below" },
+
+        { type: "line", x0: 55, x1: 55, y0: 25, y1: 105, line: { color: "#D8DEE8", width: 1, dash: "dot" } },
+        { type: "line", x0: 20, x1: 100, y0: 65, y1: 65, line: { color: "#D8DEE8", width: 1, dash: "dot" } },
+  ],
       annotations: [
-        { x: 35, y: 100, text: "수요 높음 · 공급 낮음", showarrow: false, font: { size: 11, color: "#0f766e" } },
-        { x: 86, y: 36, text: "공급 과열", showarrow: false, font: { size: 11, color: "#b45309" } },
-      ],
+        { x: 35, y: 100, text: "기회 영역", showarrow: false, font: { size: 11, color: "#2C7F89" } },
+        { x: 76, y: 100, text: "성장 영역", showarrow: false, font: { size: 11, color: "#3F8D58" } },
+        { x: 35, y: 36, text: "관찰 영역", showarrow: false, font: { size: 11, color: "#6B7280" } },
+        { x: 86, y: 36, text: "공급 과열", showarrow: false, font: { size: 11, color: "#A65378" } },
+  ],
     });
   }
 

@@ -39,7 +39,7 @@ window.DASHBOARD_DATA = {
     ],
     demandSupplyMatrix: [
       { ingredient: "레티놀", demand: 92, supply: 61, growth: 24.8, size: 44, status: "growth" },
-      { ingredient: "PDRN", demand: 86, supply: 42, growth: 21.1, size: 38, status: "shortage" },
+      { ingredient: "PDRN", demand: 86, supply: 42, growth: 21.1, size: 38, status: "opportunity" },
       { ingredient: "나이아신아마이드", demand: 78, supply: 73, growth: 17.6, size: 42, status: "growth" },
       { ingredient: "세라마이드", demand: 74, supply: 45, growth: 13.9, size: 35, status: "opportunity" },
       { ingredient: "판테놀", demand: 69, supply: 39, growth: 11.4, size: 30, status: "opportunity" },
@@ -65,10 +65,10 @@ window.DASHBOARD_DATA = {
     searchTrend: {
       dates: ["2025.04.30", "2025.05.01", "2025.05.02", "2025.05.03", "2025.05.04", "2025.05.05"],
       series: [
-        { ingredient: "레티놀", values: [72, 79, 88, 100, 94, 97], color: "#2563eb" },
-        { ingredient: "PDRN", values: [68, 72, 76, 84, 88, 91], color: "#14b8a6" },
-        { ingredient: "세라마이드", values: [54, 59, 62, 65, 69, 72], color: "#f59e0b" },
-        { ingredient: "판테놀", values: [48, 51, 55, 58, 60, 63], color: "#8b5cf6" },
+        { ingredient: "레티놀", values: [72, 79, 88, 100, 94, 97], color: "#3B66A6" },
+        { ingredient: "PDRN", values: [68, 72, 76, 84, 88, 91], color: "#2CA6A4" },
+        { ingredient: "세라마이드", values: [54, 59, 62, 65, 69, 72], color: "#E6A23C" },
+        { ingredient: "판테놀", values: [48, 51, 55, 58, 60, 63], color: "#8B7CC8" },
       ],
     },
     concernTable: [

@@ -72,7 +72,7 @@ button, input { font: inherit; }
 .rank-value strong { font-size: 14px; color: #059669; }
 .rank-value span { font-size: 10px; color: #7c8ba4; font-weight: 800; }
 .matrix-legend { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
-.legend-pill { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px; font-size: 11px; font-weight: 800; color: #334155; background: #f8fafc; border: 1px solid #e2e8f0; }
+.legend-pill { display: inline-flex; align-items: center; gap: 6px; padding: 6px 11px; border-radius: 999px; font-size: 11px; font-weight: 800; color: #334155; background: rgba(255,255,255,.72); border: 1px solid #e5eaf2; box-shadow: 0 3px 10px rgba(15,23,42,.035); }
 .legend-dot { width: 8px; height: 8px; border-radius: 999px; flex-shrink: 0; }
 .insight-list { display: grid; gap: 12px; }
 .insight-item { position: relative; padding: 15px 16px 15px 52px; border-radius: 12px; background: #fbfdff; border: 1px solid #e2e8f0; font-size: 14px; color: #263244; line-height: 1.65; min-height: 68px; display: flex; align-items: center; }
