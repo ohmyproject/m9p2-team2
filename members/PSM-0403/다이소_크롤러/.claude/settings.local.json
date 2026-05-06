@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir \"c:\\\\Users\\\\pijun\\\\Desktop\\\\다이소\\\\daiso_crawler\")",
+      "Bash(Get-ChildItem -Recurse \"c:\\\\Users\\\\pijun\\\\Desktop\\\\다이소\\\\daiso_crawler\")",
+      "Bash(Select-Object Name, Length)",
+      "Bash(python -c ' *)",
+      "PowerShell(& \"$env:USERPROFILE\\\\.conda\\\\envs\\\\project\\\\Scripts\\\\pip.exe\" install openai 2>&1 | Select-String -NotMatch \"WARNING\")",
+      "PowerShell(& \"$env:USERPROFILE\\\\.conda\\\\envs\\\\project\\\\Scripts\\\\pip.exe\" install python-dotenv 2>&1 | Select-String -Pattern \"already satisfied|Successfully installed\")"
+    ],
+    "additionalDirectories": [
+      "c:\\Users\\pijun\\Desktop\\다이소"
+    ]
+  }
+}
