@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>BeautyMD Insight — 화장품 성분 인텔리전스 대시보드</title>
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-  <link rel="stylesheet" href="assets/style.css?v=20250507agent">
+  <link rel="stylesheet" href="assets/style.css?v=20260507datalabconcern">
 </head>
 <body>
   <div class="dash">
@@ -90,7 +90,7 @@
             <div>
               <span class="page-badge">Page 2</span>
               <h1>2. 검색 트렌드 분석</h1>
-              <p>성분 검색량의 시간 흐름과 연령대별 피부 고민 트렌드를 분석합니다.</p>
+              <p>성분 검색 관심도 변화가 시장 제품 수와 연령대별 피부 고민 맥락에 어떻게 연결되는지 분석합니다.</p>
             </div>
             <div class="page-header-actions">
               <div class="control-chip">
@@ -99,7 +99,7 @@
               </div>
               <div class="control-chip muted">
                 <span>성분 선택</span>
-                <strong>5개 선택됨</strong>
+                <strong id="selectedIngredientCount">5개 선택됨</strong>
               </div>
               <div class="data-status-slot"></div>
             </div>
@@ -107,14 +107,23 @@
 
           <div class="dashboard-grid search-grid">
             <section class="card trend-card">
-              <div class="card-header">검색량 추이 그래프</div>
+              <div class="card-header">
+                <span>성분 검색 관심도 추이</span>
+                <span class="card-meta">Naver DataLab ratio</span>
+              </div>
+              <div class="period-control-row" id="searchPeriodButtons" aria-label="검색 관심도 기간 선택"></div>
               <div class="trend-badges" id="searchTrendBadges"></div>
               <div class="plot-shell js-plot" id="searchTrendPlot"></div>
             </section>
 
-            <section class="card selected-summary-card">
-              <div class="card-header">선택 성분 요약</div>
-              <div class="summary-mini-grid" id="selectedIngredientSummary"></div>
+            <section class="card market-products-card">
+              <div class="card-header">
+                <span>성분별 시장 제품 수 현황</span>
+                <span class="card-meta">2025.05.01~05.07 크롤링 기준</span>
+              </div>
+              <p class="card-helper">검색 관심도와 함께 시장 공급 규모를 비교해 볼 수 있는 보조 지표입니다.</p>
+              <div class="product-data-note">전처리 완료 데이터 반영 전 임시값입니다.</div>
+              <div class="plot-shell compact js-plot" id="marketProductBarPlot"></div>
             </section>
 
             <section class="card concern-card">
@@ -122,16 +131,16 @@
                 <span>연령대별 피부 고민 집중도</span>
                 <span class="card-meta">heatmap</span>
               </div>
+              <p class="card-helper">주름/탄력, 잡티/톤, 트러블/진정, 건조/장벽 키워드 집중도로 타겟 맥락을 해석합니다.</p>
               <div class="heatmap-wrap" id="concernHeatmap"></div>
             </section>
 
-            <section class="card age-card">
-              <div class="card-header">피부 고민 기반 관심 성분 TOP 3</div>
-              <div class="age-top-grid" id="ageTopIngredients"></div>
-            </section>
-
             <section class="card search-insight-card">
-              <div class="card-header">검색 트렌드 인사이트</div>
+              <div class="card-header">
+                <span>검색 트렌드 인사이트</span>
+                <span class="card-meta">summary</span>
+              </div>
+              <p class="card-helper">검색 관심도, 제품 수, 피부 고민 집중도를 함께 읽어 핵심 해석을 요약합니다.</p>
               <div class="insight-list" id="searchInsights"></div>
             </section>
           </div>
@@ -271,7 +280,7 @@
     </main>
   </div>
 
-  <script src="assets/dashboard_data.js?v=20250507agent"></script>
-  <script src="assets/app.js?v=20250507agent"></script>
+  <script src="assets/dashboard_data.js?v=20260507datalabconcern"></script>
+  <script src="assets/app.js?v=20260507datalabconcern"></script>
 </body>
 </html>
