@@ -17,6 +17,7 @@ from .common import clean_text, make_output_path, now_iso, parse_sorts
 from .config import ProductCrawlConfig, ROOT_DIR
 from .product_parser import (
     build_detail_dict,
+    extract_volume_from_text,
     parse_product_cards,
     with_page,
     with_sort,
@@ -211,8 +212,8 @@ def extract_main_ingredients_with_gpt_ocr(
         "확실한 주요 성분이 1개면 1개만, 2개면 2개만 답하세요. "
         "개수를 맞추기 위해 성분을 추측하거나 3개까지 채우지 마세요. "
         "전성분표 전체가 아니라 상품설명 이미지에서 강조된 핵심 성분만 선택하세요. "
-        "반드시 한글 성분명으로만 답하고, 설명 없이 쉼표로 구분하세요. "
-        "영문 약어가 이미지에 크게 표시된 경우에도 가능한 한 통용되는 한글명으로 바꿔주세요. "
+        "반드시 영어 성분명으로만 답하고, 설명 없이 쉼표로 구분하세요. "
+        "영문 약어가 이미지에 크게 표시된 경우에도 가능한 한 통용되는 영어명으로 바꿔주세요. "
         "이미지에서 주요 성분을 확인할 수 없으면 빈 문자열만 출력하세요.\n\n"
         f"제품명: {clean_text(product_name)}\n"
         f"HTML 전성분 참고값: {clean_text(ingredients_text)[:1200]}"
@@ -548,6 +549,10 @@ def collect_sort_products(
             detail_delay_seconds=config.detail_delay_seconds,
             access_check_timeout_seconds=config.access_check_timeout_seconds,
         )
+
+        # 상세 페이지에서 용량을 못 찾은 경우 상품명에서 재시도
+        if not detail.get("용량", ""):
+            detail["용량"] = extract_volume_from_text(product_name)
 
         detail["주요성분"] = extract_main_ingredients_with_gpt_ocr(
             product_name=product_name,

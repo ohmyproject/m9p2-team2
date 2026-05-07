@@ -9,7 +9,7 @@ from oliveyoung_crawler.run_pipeline import run_pipeline
 TOTAL_PAGES         = 1
 
 # 최대 상품 수 (None이면 제한 없음)
-MAX_PRODUCTS        = 24
+MAX_PRODUCTS        = 2
 
 # 올리브영 카테고리
 MAJOR_CATEGORY      = "스킨케어"

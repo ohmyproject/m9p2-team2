@@ -16,7 +16,6 @@ volume_ml이 없는 상품들을 재크롤링해 용량을 채웁니다.
   4. URL이 같은 모든 행에 용량을 채우고 CSV를 덮어씁니다.
 """
 
-import re
 import sys
 import time
 from pathlib import Path
@@ -56,33 +55,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 from oliveyoung_crawler.browser import create_driver, safe_quit_driver, wait_for_oliveyoung_access
-from oliveyoung_crawler.product_parser import extract_notice_table
-
-
-# ─── 용량 추출 정규식 ──────────────────────────────────────────
-# 단위 우선순위: ml > g > L > oz > 매/장/개/정
-_VOLUME_PATTERNS = [
-    re.compile(r'\d+(?:[.,]\d+)?\s*(?:ml|mL|ML|㎖)', re.UNICODE),
-    re.compile(r'\d+(?:[.,]\d+)?\s*g(?![a-zA-Z가-힣])', re.UNICODE),
-    re.compile(r'\d+(?:[.,]\d+)?\s*[Ll](?![a-zA-Z가-힣])', re.UNICODE),
-    re.compile(r'\d+(?:[.,]\d+)?\s*(?:oz|OZ)', re.UNICODE),
-    re.compile(r'\d+\s*(?:매|장|정)', re.UNICODE),
-]
-
-
-def extract_volume_from_text(text: str) -> str:
-    """
-    텍스트에서 용량을 추출합니다.
-    상품명 / 제공고시 / 상세페이지 텍스트 모두에 사용합니다.
-    """
-    if not text:
-        return ""
-    text = re.sub(r"\s+", " ", str(text)).strip()
-    for pattern in _VOLUME_PATTERNS:
-        m = pattern.search(text)
-        if m:
-            return re.sub(r"\s+", "", m.group(0))
-    return ""
+from oliveyoung_crawler.product_parser import extract_notice_table, extract_volume_from_text
 
 
 # ─── 상세 페이지 크롤링 ───────────────────────────────────────

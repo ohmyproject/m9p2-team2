@@ -1,12 +1,35 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup
 
 from .common import clean_text, ensure_absolute_oliveyoung_url
+
+
+# 단위 우선순위: ml > g > L > oz > 매/장/개/정
+_VOLUME_PATTERNS = [
+    re.compile(r'\d+(?:[.,]\d+)?\s*(?:ml|mL|ML|㎖)', re.UNICODE),
+    re.compile(r'\d+(?:[.,]\d+)?\s*g(?![a-zA-Z가-힣])', re.UNICODE),
+    re.compile(r'\d+(?:[.,]\d+)?\s*[Ll](?![a-zA-Z가-힣])', re.UNICODE),
+    re.compile(r'\d+(?:[.,]\d+)?\s*(?:oz|OZ)', re.UNICODE),
+    re.compile(r'\d+\s*(?:매|장|정)', re.UNICODE),
+]
+
+
+def extract_volume_from_text(text: str) -> str:
+    """텍스트에서 용량을 추출합니다. 상품명·제공고시·상세페이지 텍스트 모두에 사용합니다."""
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", str(text)).strip()
+    for pattern in _VOLUME_PATTERNS:
+        m = pattern.search(text)
+        if m:
+            return re.sub(r"\s+", "", m.group(0))
+    return ""
 
 
 # ============================================================
@@ -412,6 +435,12 @@ def build_detail_dict(soup: BeautifulSoup) -> dict[str, str]:
     for key, value in notice_table.items():
         if key in NOTICE_FIELD_ALIASES.values():
             detail[key] = value
+
+    # 용량: 제공고시 값에 정규식 적용 → 없으면 전체 텍스트에서 재시도
+    volume = extract_volume_from_text(detail.get("용량", ""))
+    if not volume:
+        volume = extract_volume_from_text(soup.get_text(" ", strip=True))
+    detail["용량"] = volume
 
     detail["상세정보_JSON"] = json.dumps(notice_table, ensure_ascii=False)
 
