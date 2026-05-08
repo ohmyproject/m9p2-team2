@@ -78,6 +78,8 @@
     { key: "3y", label: "3년", dayCount: 1095, timeUnit: "month" },
   ];
   let activeSearchPeriodKey = "snapshot";
+  let activePriceType = "sale";
+  let activeReviewIngredientKey = DATA.page3.selectedIngredientKey || "retinol";
   const DATA_LOAD_STATE = {
     dashboardSignals: "loading",
     searchTrend: "loading",
@@ -248,11 +250,42 @@
     return true;
   }
 
+  function getProductGrowth(item) {
+    const current = Number(item.product_count || 0);
+    const previous = Number(item.previous_product_count || 0);
+    if (Number.isFinite(Number(item.product_growth_rate))) {
+      return Number(item.product_growth_rate);
+    }
+    if (previous > 0) {
+      return ((current - previous) / previous) * 100;
+    }
+    return 0;
+  }
+
+  function getProductGrowthCount(item) {
+    if (Number.isFinite(Number(item.product_growth_count))) {
+      return Number(item.product_growth_count);
+    }
+    const current = Number(item.product_count || 0);
+    const previous = Number(item.previous_product_count || 0);
+    return previous > 0 ? current - previous : 0;
+  }
+
+  function getGrowthDisplay(growthRate) {
+    const growth = Number(growthRate || 0);
+    if (growth > 0) return { text: `▲ +${growth.toFixed(1)}%`, color: "#059669" };
+    if (growth < 0) return { text: `▼ ${growth.toFixed(1)}%`, color: "#dc2626" };
+    return { text: "― 0.0%", color: "#64748b" };
+  }
+
   function getMarketProducts() {
     return (DATA.page2.marketProducts || [])
       .map((item) => ({
         ...item,
         product_count: Number(item.product_count || 0),
+        previous_product_count: Number(item.previous_product_count || 0),
+        product_growth_rate: getProductGrowth(item),
+        product_growth_count: getProductGrowthCount(item),
       }))
       .sort((a, b) => b.product_count - a.product_count);
   }
@@ -500,18 +533,43 @@
     renderInsightList("searchInsights", page.insights);
   }
 
+  function getReviewIngredientOptions() {
+    if (DATA.page3.ingredientOptions?.length) return DATA.page3.ingredientOptions;
+    if (DATA.page3.byIngredient) {
+      return Object.entries(DATA.page3.byIngredient).map(([key, value]) => ({ key, label: value.ingredient || key }));
+    }
+    return [{ key: "retinol", label: DATA.page3.ingredient || "레티놀" }];
+  }
+
+  function getActiveReviewPage() {
+    return DATA.page3.byIngredient?.[activeReviewIngredientKey] || DATA.page3;
+  }
+
+  function renderReviewIngredientSelect() {
+    const select = qs("#reviewIngredientSelect");
+    if (!select) return;
+    const options = getReviewIngredientOptions();
+    if (!options.some((item) => item.key === activeReviewIngredientKey)) {
+      activeReviewIngredientKey = options[0]?.key || "retinol";
+    }
+    select.innerHTML = options.map((item) => `
+      <option value="${escapeHtml(item.key)}">${escapeHtml(item.label)}</option>
+    `).join("");
+    select.value = activeReviewIngredientKey;
+  }
+
   function renderReviewPage() {
-    const page = DATA.page3;
-    qs("#reviewIngredient").textContent = page.ingredient;
-    qs("#reviewFunctionChips").innerHTML = page.functionChips.map((chip) => `
+    const page = getActiveReviewPage();
+    renderReviewIngredientSelect();
+    qs("#reviewFunctionChips").innerHTML = (page.functionChips || []).map((chip) => `
       <span class="feature-chip">${escapeHtml(chip)}</span>
     `).join("");
     const positiveKeywords = page.positiveKeywords?.length
       ? page.positiveKeywords
-      : page.keywords.filter((keyword) => keyword.tone === "positive").map((keyword) => ({ label: keyword.label, score: keyword.score }));
+      : (page.keywords || []).filter((keyword) => keyword.tone === "positive").map((keyword) => ({ label: keyword.label, score: keyword.score }));
     const negativeKeywords = page.negativeKeywords?.length
       ? page.negativeKeywords
-      : page.keywords.filter((keyword) => keyword.tone === "negative").map((keyword) => ({ label: keyword.label, score: keyword.score }));
+      : (page.keywords || []).filter((keyword) => keyword.tone === "negative").map((keyword) => ({ label: keyword.label, score: keyword.score }));
     qs("#reviewKeywords").innerHTML = [
       ["긍정 키워드 TOP 5", positiveKeywords, "positive"],
       ["부정 키워드 TOP 5", negativeKeywords, "negative"],
@@ -526,7 +584,7 @@
         `).join("")}
       </div>
     `).join("");
-    qs("#retinolProducts").innerHTML = page.brandProducts.map((item) => `
+    qs("#retinolProducts").innerHTML = (page.brandProducts || []).map((item) => `
       <div class="product-row">
         <div class="product-rank">${formatNumber(item.rank)}</div>
         <div>
@@ -556,7 +614,7 @@
           </tr>
         </thead>
         <tbody>
-          ${page.skinTypeSentiment.map((row) => `
+          ${(page.skinTypeSentiment || []).map((row) => `
             <tr>
               <td>${escapeHtml(row.type)}</td>
               <td>${row.positive}%</td>
@@ -568,7 +626,7 @@
         </tbody>
       </table>
     `;
-    renderInsightList("reviewOpportunities", page.opportunities);
+    renderInsightList("reviewOpportunities", page.opportunities || []);
   }
 
   function getSeverityClass(severity) {
@@ -751,20 +809,34 @@
     }, { responsive: true, displayModeBar: false, ...config });
   }
 
+  function getPriceValues(item) {
+    if (activePriceType === "list") return item.listPrices || item.prices || item.salePrices || [];
+    return item.salePrices || item.prices || item.listPrices || [];
+  }
+
+  function updatePriceToggleButtons() {
+    qsa("#priceTypeButtons .period-button").forEach((button) => {
+      button.classList.toggle("active", button.dataset.priceType === activePriceType);
+    });
+  }
+
   function renderPriceViolinPlot() {
+    updatePriceToggleButtons();
+    const yAxisTitle = activePriceType === "list" ? "정가(원)" : "판매가(원)";
+    const priceLabel = activePriceType === "list" ? "정가" : "판매가";
     const traces = DATA.page1.priceDistribution.map((item, index) => ({
       type: "violin",
       name: item.ingredient,
-      y: item.prices,
+      y: getPriceValues(item),
       box: { visible: true },
       meanline: { visible: true },
       points: false,
       line: { color: ["#2563eb", "#14b8a6", "#f59e0b", "#8b5cf6", "#64748b"][index] },
       fillcolor: ["rgba(37,99,235,.18)", "rgba(20,184,166,.18)", "rgba(245,158,11,.2)", "rgba(139,92,246,.16)", "rgba(100,116,139,.16)"][index],
-      hovertemplate: "%{x}<br>가격 %{y:,}원<extra></extra>",
+      hovertemplate: `%{x}<br>${priceLabel} %{y:,}원<extra></extra>`,
     }));
     drawPlot("priceViolinPlot", traces, {
-      yaxis: { title: "판매가(원)", gridcolor: "#eef2f7", tickformat: "," },
+      yaxis: { title: yAxisTitle, gridcolor: "#eef2f7", tickformat: "," },
       xaxis: { title: "", gridcolor: "#f8fafc" },
       showlegend: false,
     });
@@ -854,8 +926,26 @@
       if (container) container.innerHTML = '<div class="empty-state api-state">전처리 제품 데이터를 불러오는 중입니다.</div>';
       return;
     }
-    const labels = products.map((item) => item.ingredient_label).reverse();
-    const counts = products.map((item) => item.product_count).reverse();
+
+    const rows = products.slice().reverse();
+    const labels = rows.map((item) => item.ingredient_label);
+    const counts = rows.map((item) => item.product_count);
+    const growthDisplays = rows.map((item) => getGrowthDisplay(item.product_growth_rate));
+    const maxCount = Math.max(...counts, 1);
+    const growthX = -maxCount * 0.24;
+
+    const annotations = rows.map((item, index) => ({
+      x: growthX,
+      y: item.ingredient_label,
+      xref: "x",
+      yref: "y",
+      text: growthDisplays[index].text,
+      showarrow: false,
+      xanchor: "left",
+      align: "left",
+      font: { size: 12, color: growthDisplays[index].color, family: "'Segoe UI', 'Noto Sans KR', sans-serif" },
+    }));
+
     drawPlot("marketProductBarPlot", [{
       type: "bar",
       orientation: "h",
@@ -863,13 +953,37 @@
       x: counts,
       text: counts.map((value) => `${formatNumber(value)}개`),
       textposition: "auto",
-      marker: { color: "#2CA6A4", opacity: 0.82 },
-      hovertemplate: "%{y}<br>제품 수 %{x:,}개<extra></extra>",
+      marker: {
+        color: rows.map((item) => DATALAB_TREND_COLORS[item.ingredient_label] || "#2CA6A4"),
+        opacity: 0.86,
+      },
+      customdata: rows.map((item) => [
+        formatNumber(item.previous_product_count),
+        getGrowthDisplay(item.product_growth_rate).text,
+        formatNumber(item.product_growth_count),
+      ]),
+      hovertemplate: [
+        "%{y}",
+        "현재 제품 수 %{x:,}개",
+        "전주 제품 수 %{customdata[0]}개",
+        "전주 대비 %{customdata[1]}",
+        "증가 제품 수 %{customdata[2]}개",
+        "<extra></extra>",
+      ].join("<br>"),
     }], {
-      xaxis: { title: "제품 수", gridcolor: "#eef2f7", zeroline: false },
+      xaxis: {
+        title: "제품 수",
+        gridcolor: "#eef2f7",
+        zeroline: true,
+        zerolinecolor: "#d8e0ee",
+        range: [growthX * 1.05, maxCount * 1.16],
+        tickvals: [0, Math.round(maxCount / 2), maxCount],
+        ticktext: ["0", formatNumber(Math.round(maxCount / 2)), formatNumber(maxCount)],
+      },
       yaxis: { title: "", automargin: true },
       showlegend: false,
-      margin: { l: 112, r: 24, t: 10, b: 44 },
+      annotations,
+      margin: { l: 120, r: 24, t: 10, b: 44 },
     });
   }
 
@@ -911,7 +1025,7 @@
   }
 
   function renderSentimentPlot() {
-  const sentiment = DATA.page3.sentiment;
+  const sentiment = getActiveReviewPage().sentiment || { positive: 0, neutral: 0, negative: 0 };
 
   drawPlot("sentimentPlot", [{
     type: "pie",
@@ -991,6 +1105,29 @@
     });
   }
 
+  function bindPriceTypeControls() {
+    qs("#priceTypeButtons")?.addEventListener("click", (event) => {
+      const button = event.target.closest(".period-button");
+      if (!button || !button.dataset.priceType || button.dataset.priceType === activePriceType) return;
+      activePriceType = button.dataset.priceType;
+      renderPriceViolinPlot();
+      chartRendered.A = true;
+      resizeVisiblePlots();
+    });
+  }
+
+  function bindReviewIngredientControls() {
+    qs("#reviewIngredientSelect")?.addEventListener("change", (event) => {
+      activeReviewIngredientKey = event.target.value;
+      renderReviewPage();
+      if (chartRendered.C || qs("#panel-C")?.classList.contains("active")) {
+        renderSentimentPlot();
+        chartRendered.C = true;
+        resizeVisiblePlots();
+      }
+    });
+  }
+
   function bindSearchPeriodControls() {
     qs("#searchPeriodButtons")?.addEventListener("click", (event) => {
       const button = event.target.closest(".period-button");
@@ -1019,6 +1156,8 @@
     renderAlertPage();
     renderAgentPage();
     bindNavigation();
+    bindPriceTypeControls();
+    bindReviewIngredientControls();
     bindSearchPeriodControls();
     bindWindowEvents();
     renderChartsForPanel("A");

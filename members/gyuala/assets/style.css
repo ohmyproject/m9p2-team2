@@ -59,6 +59,10 @@ button, input { font: inherit; }
 .card-meta { font-size: 11px; color: #7c8ba4; font-weight: 800; white-space: nowrap; }
 .plot-shell { width: 100%; min-height: 320px; }
 .price-card .plot-shell { min-height: 276px; }
+
+.price-toggle-control { display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; margin-left: auto; flex-wrap: wrap; }
+.price-toggle-control .period-button { min-height: 28px; padding: 0 11px; font-size: 11px; }
+.price-toggle-control .card-meta { margin-left: 4px; }
 .market-matrix-card .plot-shell { min-height: 420px; }
 .plot-shell.compact { min-height: 260px; }
 .status-note { font-size: 12px; color: #53627a; line-height: 1.7; margin-bottom: 12px; }
@@ -80,19 +84,26 @@ button, input { font: inherit; }
 .control-chip { display: inline-flex; align-items: center; gap: 10px; background: #fff; border: 1px solid #d8e0ee; border-radius: 12px; padding: 10px 14px; min-height: 48px; }
 .control-chip span { color: #76849b; font-size: 11px; font-weight: 900; }
 .control-chip strong { color: #0f1f48; font-size: 13px; font-weight: 900; }
+
+.review-ingredient-select { min-width: 150px; border: 0; background: transparent; color: #0f1f48; font-size: 13px; font-weight: 900; outline: none; cursor: pointer; }
+.review-ingredient-select:focus { color: #095fe9; }
 .control-chip.muted { background: #fbfdff; }
 .feature-control { align-items: flex-start; flex-direction: column; gap: 8px; min-width: 320px; }
 .chip-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .feature-chip { display: inline-flex; align-items: center; min-height: 28px; padding: 0 10px; border-radius: 8px; background: #f3e8ff; color: #7c3aed; border: 1px solid #ddd6fe; font-size: 12px; font-weight: 900; }
 .feature-chip:nth-child(2) { background: #fef2f2; color: #ef4444; border-color: #fecaca; }
 .feature-chip:nth-child(3) { background: #ecfdf5; color: #059669; border-color: #bbf7d0; }
-.search-grid { grid-template-columns: minmax(0, 1.18fr) minmax(360px, .82fr); align-items: start; }
+.search-grid { grid-template-columns: minmax(0, 1.18fr) minmax(360px, .82fr); align-items: stretch; }
 .trend-card { grid-column: 1; }
 .market-products-card { grid-column: 2; }
+
+.trend-card, .market-products-card { height: 100%; display: flex; flex-direction: column; }
+.trend-card .plot-shell, .market-products-card .plot-shell { flex: 1; }
+.market-products-card .plot-shell { min-height: 360px; }
 .concern-card { grid-column: 1; }
 .search-insight-card { grid-column: 2; }
 .search-grid .plot-shell { min-height: 360px; }
-.market-products-card .plot-shell { min-height: 300px; }
+
 .card-helper { margin: -6px 0 12px; color: #64748b; font-size: 12px; line-height: 1.6; }
 .product-data-note { display: inline-flex; align-items: center; min-height: 28px; padding: 0 10px; border-radius: 999px; background: #fff7ed; color: #c2410c; border: 1px solid #fed7aa; font-size: 11px; font-weight: 900; margin-bottom: 10px; }
 .period-control-row { display: flex; gap: 8px; flex-wrap: wrap; margin: -4px 0 12px; }

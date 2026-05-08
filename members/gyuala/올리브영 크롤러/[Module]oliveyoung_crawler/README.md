@@ -18,11 +18,11 @@ OPENAI_OCR_MODEL=gpt-4.1-mini
 
 # 2. 코드 실행
 python .\main.py `
-  --total-pages 1 `
+  --total-pages 2 `
   --max-products 24 `
   --major-category "스킨케어" `
   --middle-category "에센스/세럼/앰플" `
-  --sorts best `
+  --sorts best,new `
   --reviews-per-product 10 `
   --chrome-version 147 `
   --interim-save-interval 50 `
@@ -35,16 +35,24 @@ python .\main.py `
 
 Data/
 ├─ oliveyoung_판매순(info)_YYMMDD.csv
-└─ oliveyoung_판매순(review)_YYMMDD.csv
+├─ oliveyoung_판매순(review)_YYMMDD.csv
+├─ oliveyoung_신상품순(info)_YYMMDD.csv
+└─ oliveyoung_신상품순(review)_YYMMDD.csv
+
+수집 순서:
+판매순 info → 판매순 review → 신상품순 info → 신상품순 review
+
+상품명에서 용량/기획 구성만 다른 중복 상품은 앞 순위 상품만 남깁니다.
+예: 30ml/60ml 용량만 다른 같은 상품은 1개만 저장됩니다.
 
 제품 CSV 컬럼:
-product_name, brand, regular_price, discount, sales_price, rating, review_count, url, ingredients, main_ingredients, ing_source, crawled_at
+date, platform, sort_type, rank, product_name, brand, volume_ml, regular_price, discount, sales_price, rating, review_count, main_ingredients, ingredients, ing_source, url
 
 main_ingredients는 상품설명 이미지 URL을 GPT Vision/OCR에 보내 확인되는 주요 성분만 최대 3개까지 한글로 추출한 값입니다.
 OPENAI_API_KEY가 없거나 API 호출에 실패하면 빈 값으로 저장하고 크롤링은 계속 진행됩니다.
 
 리뷰 CSV 컬럼:
-product_name, review_rating, review_count, skin_type, review_text, url
+date, platform, sort_type, main_ingredients, product_name, review_count, review_rating, skin_type, review_text, url
 
 # [실행 관련 옵션은 하단에 기재]
 
@@ -88,11 +96,11 @@ python -m py_compile `
 # 2. 상품+리뷰 CSV 수집 테스트 : 최초 DB 적재를 제외하기 위해 --skip-import 사용
 
 python .\main.py `
-  --total-pages 1 `
+  --total-pages 2 `
   --max-products 24 `
   --major-category "스킨케어" `
   --middle-category "에센스/세럼/앰플" `
-  --sorts best `
+  --sorts best,new `
   --reviews-per-product 10 `
   --chrome-version 147 `
   --interim-save-interval 50 `
@@ -103,33 +111,45 @@ python .\main.py `
 
 Data/
 ├─ oliveyoung_판매순(info)_YYMMDD.csv
-└─ oliveyoung_판매순(review)_YYMMDD.csv
+├─ oliveyoung_판매순(review)_YYMMDD.csv
+├─ oliveyoung_신상품순(info)_YYMMDD.csv
+└─ oliveyoung_신상품순(review)_YYMMDD.csv
 
 제품 CSV 컬럼:
-product_name, brand, regular_price, discount, sales_price, rating, review_count, url, ingredients, main_ingredients, ing_source, crawled_at
+date, platform, sort_type, rank, product_name, brand, volume_ml, regular_price, discount, sales_price, rating, review_count, main_ingredients, ingredients, ing_source, url
 
 리뷰 CSV 컬럼:
-product_name, review_rating, review_count, skin_type, review_text, url
+date, platform, sort_type, main_ingredients, product_name, review_count, review_rating, skin_type, review_text, url
 
 # 3. 상품 수집만 테스트
 
 python .\main.py `
-  --total-pages 1 `
+  --total-pages 2 `
   --max-products 24 `
-  --sorts best `
+  --sorts best,new `
   --skip-reviews `
+  --skip-import
+
+# 4. 기존 상품 CSV로 리뷰만 다시 수집
+
+python .\main.py `
+  --review-only-product-csv ".\Data\oliveyoung_판매순(info)_YYMMDD.csv" `
+  --reviews-per-product 10 `
+  --chrome-version 147 `
+  --access-check-timeout-seconds 300 `
   --skip-import
 
 # [실행 관련 옵션]
 
---total-pages	수집할 페이지 수	1
+--total-pages	수집할 페이지 수	2
 --max-products	최대 상품 수	24
 --major-category	대카테고리	"스킨케어"
 --middle-category	중카테고리	"에센스/세럼/앰플"
---sorts	정렬 기준	best, hot, new, hot,new
+--sorts	정렬 기준	best,new, best, new, hot
 --reviews-per-product	상품당 리뷰 수	10
 --chrome-version	Chrome 버전	147
 --interim-save-interval	중간 저장 간격	50
+--review-only-product-csv	기존 상품 CSV로 리뷰만 다시 수집	선택
 --skip-reviews	리뷰 수집 생략	상품 CSV만 확인
 --skip-import	DB 적재 생략	CSV까지만 확인
 
