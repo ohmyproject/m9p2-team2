@@ -1,9 +1,9 @@
 (function () {
   const FALLBACK_DATA = {
     meta: {
-      dataRange: "2025.04.30 ~ 2025.05.05",
-      lastUpdated: "2025.05.05 23:59",
-      comparisonLabel: "전주 대비",
+      dataRange: "Naver DataLab 연결 중",
+      lastUpdated: "-",
+      comparisonLabel: "기간 내 전반부 대비 후반부",
     },
     page1Summary: {
       analyzedProducts: 3842,
@@ -20,18 +20,18 @@
       insights: [],
     },
     page2: {
-      periodLabel: "2025.04.30 ~ 2025.05.05",
+      periodLabel: "Naver DataLab 연결 중",
       selectedIngredient: "나이아신아마이드",
       selectedSummary: {},
       searchTrend: { dates: [], series: [] },
-      // TODO: 전처리 완료 제품 수 데이터 연결 후 아래 mock 값을 실제 집계값으로 교체
-      marketProducts: [
-        { ingredient_key: "niacinamide", ingredient_label: "나이아신아마이드", product_count: 128, unique_product_count: 118, brand_count: 43, crawl_start: "2025-05-01", crawl_end: "2025-05-07", source: "oliveyoung", is_mock: true },
-        { ingredient_key: "hyaluronic_acid", ingredient_label: "히알루론산", product_count: 96, unique_product_count: 89, brand_count: 36, crawl_start: "2025-05-01", crawl_end: "2025-05-07", source: "oliveyoung", is_mock: true },
-        { ingredient_key: "centella", ingredient_label: "병풀/시카", product_count: 74, unique_product_count: 69, brand_count: 30, crawl_start: "2025-05-01", crawl_end: "2025-05-07", source: "oliveyoung", is_mock: true },
-        { ingredient_key: "retinol", ingredient_label: "레티놀", product_count: 49, unique_product_count: 45, brand_count: 21, crawl_start: "2025-05-01", crawl_end: "2025-05-07", source: "oliveyoung", is_mock: true },
-        { ingredient_key: "pdrn", ingredient_label: "PDRN", product_count: 27, unique_product_count: 25, brand_count: 13, crawl_start: "2025-05-01", crawl_end: "2025-05-07", source: "oliveyoung", is_mock: true },
+      concernMetrics: [
+        { key: "wrinkleElasticity", label: "주름/탄력" },
+        { key: "toneSpot", label: "잡티/톤" },
+        { key: "troubleCalming", label: "트러블/진정" },
+        { key: "drynessBarrier", label: "건조/장벽" },
+        { key: "poreSebum", label: "모공/피지" },
       ],
+      marketProducts: [],
       concernTable: [],
       ageTopIngredients: [],
       insights: [],
@@ -71,12 +71,19 @@
     "병풀/시카": "#5AAA6E",
   };
   const SEARCH_PERIOD_OPTIONS = [
+    { key: "snapshot", label: "스냅샷", dayCount: 7, timeUnit: "date" },
     { key: "1m", label: "1개월", dayCount: 30, timeUnit: "date" },
     { key: "6m", label: "6개월", dayCount: 180, timeUnit: "week" },
     { key: "1y", label: "1년", dayCount: 365, timeUnit: "week" },
     { key: "3y", label: "3년", dayCount: 1095, timeUnit: "month" },
   ];
-  let activeSearchPeriodKey = "6m";
+  let activeSearchPeriodKey = "snapshot";
+  const DATA_LOAD_STATE = {
+    dashboardSignals: "loading",
+    searchTrend: "loading",
+    dashboardSignalsError: "",
+    searchTrendError: "",
+  };
   const STATUS_LABELS = {
     growth: "성장",
     shortage: "공급 부족",
@@ -174,12 +181,7 @@
   }
 
   function hasUsefulTrendData(trend) {
-    const maxValue = (trend?.series || [])
-      .flatMap((item) => item.values || [])
-      .map(Number)
-      .filter(Number.isFinite)
-      .reduce((max, value) => Math.max(max, value), 0);
-    return maxValue > 1;
+    return Boolean(trend?.dates?.length && trend?.series?.some((item) => (item.values || []).length));
   }
 
   function applySearchTrendResponse(payload) {
@@ -188,6 +190,8 @@
     if (!hasUsefulTrendData(trend)) return false;
     const leadSeries = trend.series[0];
 
+    DATA_LOAD_STATE.searchTrend = "ready";
+    DATA_LOAD_STATE.searchTrendError = "";
     DATA.page2.searchTrend = trend;
     DATA.page2.periodLabel = payload.periodLabel || DATA.page2.periodLabel;
     DATA.page2.selectedIngredient = payload.selectedIngredient || leadSeries?.ingredient || DATA.page2.selectedIngredient;
@@ -202,6 +206,14 @@
 
   function applyDashboardSignals(payload) {
     let changed = false;
+    if (payload?.meta) {
+      DATA.meta.apiSource = payload.meta.source || "naver_datalab";
+      DATA.meta.dataRange = payload.meta.dataRange || DATA.meta.dataRange;
+      DATA.meta.lastUpdated = payload.meta.lastUpdated || DATA.meta.lastUpdated;
+      DATA.meta.comparisonLabel = payload.meta.comparisonLabel || DATA.meta.comparisonLabel;
+      DATA.meta.apiWarnings = payload.meta.warnings || [];
+      if (DATA.meta.apiWarnings.length) console.warn("Naver DataLab 부분 수집 경고", DATA.meta.apiWarnings);
+    }
     if (payload?.page1?.functionRisers?.length) {
       DATA.page1.functionRisers = payload.page1.functionRisers;
       changed = true;
@@ -210,8 +222,16 @@
       DATA.page1.ingredientPopularity = payload.page1.ingredientPopularity;
       changed = true;
     }
+    if (payload?.page2?.concernMetrics?.length) {
+      DATA.page2.concernMetrics = payload.page2.concernMetrics;
+      changed = true;
+    }
     if (payload?.page2?.concernTable?.length) {
       DATA.page2.concernTable = payload.page2.concernTable;
+      changed = true;
+    }
+    if (payload?.page2?.marketProducts?.length) {
+      DATA.page2.marketProducts = payload.page2.marketProducts;
       changed = true;
     }
     if (payload?.page2?.insights?.length) {
@@ -219,6 +239,9 @@
       changed = true;
     }
     if (!changed) return false;
+    DATA_LOAD_STATE.dashboardSignals = "ready";
+    DATA_LOAD_STATE.dashboardSignalsError = "";
+    renderDataStatus();
     renderMarketPage();
     renderSearchPage();
     resizeVisiblePlots();
@@ -226,10 +249,7 @@
   }
 
   function getMarketProducts() {
-    const products = DATA.page2.marketProducts?.length
-      ? DATA.page2.marketProducts
-      : FALLBACK_DATA.page2.marketProducts;
-    return (products || [])
+    return (DATA.page2.marketProducts || [])
       .map((item) => ({
         ...item,
         product_count: Number(item.product_count || 0),
@@ -264,19 +284,40 @@
         resizeVisiblePlots();
       }
     } catch (error) {
-      console.warn("네이버 데이터랩 API 연결 실패: mock 검색 트렌드 데이터를 유지합니다.", error);
+      DATA_LOAD_STATE.searchTrend = "error";
+      DATA_LOAD_STATE.searchTrendError = error.message || String(error);
+      console.warn("네이버 데이터랩 API 연결 실패", error);
+      renderSearchPage();
+      renderSearchTrendPlot();
     }
   }
 
   async function loadDatalabDashboardSignals() {
     try {
-      applyDashboardSignals(await fetchDashboardSignals());
+      if (!applyDashboardSignals(await fetchDashboardSignals())) {
+        DATA_LOAD_STATE.dashboardSignals = "error";
+        DATA_LOAD_STATE.dashboardSignalsError = "DataLab 응답에 표시할 dashboard-signals 데이터가 없습니다.";
+        renderMarketPage();
+        renderSearchPage();
+      }
     } catch (error) {
-      console.warn("네이버 데이터랩 집계 API 연결 실패: mock 검색 관련 데이터를 유지합니다.", error);
+      DATA_LOAD_STATE.dashboardSignals = "error";
+      DATA_LOAD_STATE.dashboardSignalsError = error.message || String(error);
+      console.warn("네이버 데이터랩 집계 API 연결 실패", error);
+      renderMarketPage();
+      renderSearchPage();
     }
   }
 
+  async function loadDatalabData() {
+    // Load dashboard signals first and trend second to avoid overlapping calls to Naver DataLab.
+    await loadDatalabDashboardSignals();
+    await loadDatalabSearchTrend();
+  }
+
   function renderDataStatus() {
+    const sidebarSnapshot = qs("#sidebarSnapshotText");
+    if (sidebarSnapshot) sidebarSnapshot.textContent = `떡잎마을 방범대 · ${META.dataRange}`;
     qsa(".data-status-slot").forEach((target, index) => {
       target.innerHTML = `
       <div class="data-status-card">
@@ -289,14 +330,22 @@
             <span>마지막 업데이트</span>
             <strong>${escapeHtml(META.lastUpdated)}</strong>
           </div>
+          <div class="data-status-line">
+            <span>데이터 소스</span>
+            <strong>${escapeHtml(META.apiSource === "naver_datalab" ? "Naver DataLab" : "연결 확인 중")}</strong>
+          </div>
         </div>
         <button class="btn btn-outline update-data-button" type="button" data-status-index="${index}" aria-label="데이터 업데이트 요청" title="데이터 업데이트 요청">↻</button>
       </div>
     `;
     });
-    qsa(".update-data-button").forEach((button) => button.addEventListener("click", () => {
+    qsa(".update-data-button").forEach((button) => button.addEventListener("click", async () => {
       console.log("데이터 업데이트 요청");
-      alert("데이터 업데이트 요청");
+      DATA_LOAD_STATE.dashboardSignals = "loading";
+      DATA_LOAD_STATE.searchTrend = "loading";
+      renderMarketPage();
+      renderSearchPage();
+      await loadDatalabData();
     }));
   }
 
@@ -333,7 +382,15 @@
   }
 
   function renderRankList(targetId, items, valueLabel, options = {}) {
-    qs(`#${targetId}`).innerHTML = items.map((item, index) => `
+    const target = qs(`#${targetId}`);
+    if (!items?.length) {
+      const message = DATA_LOAD_STATE.dashboardSignals === "error"
+        ? `Naver DataLab API 오류: ${DATA_LOAD_STATE.dashboardSignalsError}`
+        : "Naver DataLab API에서 데이터를 불러오는 중입니다.";
+      target.innerHTML = `<div class="empty-state api-state">${escapeHtml(message)}</div>`;
+      return;
+    }
+    target.innerHTML = items.map((item, index) => `
       <div class="rank-item">
         <div class="rank-index">${index + 1}</div>
         <div class="rank-body">
@@ -370,7 +427,7 @@
     renderRankList("functionRiserList", DATA.page1.functionRisers, META.comparisonLabel, { barMetric: "growth" });
     renderRankList("ingredientPopularityList", DATA.page1.ingredientPopularity, META.comparisonLabel, { barMetric: "searchIndex" });
     renderMatrixLegend();
-    renderInsightList("marketInsights", DATA.page1.insights);
+    renderInsightList("marketInsights", DATA.page1.insights?.length ? DATA.page1.insights : [DATA_LOAD_STATE.dashboardSignals === "error" ? `Naver DataLab API 오류: ${DATA_LOAD_STATE.dashboardSignalsError}` : "Naver DataLab API에서 시장 신호를 불러오는 중입니다."]);
   }
 
   function renderSearchPage() {
@@ -389,53 +446,57 @@
       `).join("");
     }
 
-    const leadSeries = page.searchTrend.series[0];
-    const leadIngredient = leadSeries?.ingredient || page.selectedIngredient;
+    const leadSeries = page.searchTrend.series?.[0];
+    const leadIngredient = leadSeries?.ingredient || page.selectedIngredient || "-";
     const leadGrowth = calculateSeriesGrowth(leadSeries, page.selectedSummary.growthRate);
     const leadProduct = getMarketProductByLabel(leadIngredient);
-    const marketStatus = getMarketReflectionStatus(leadGrowth, leadProduct?.product_count || 0);
+    const marketStatus = leadProduct ? getMarketReflectionStatus(leadGrowth, leadProduct.product_count) : "공급 데이터 연결 중";
 
     qs("#searchTrendBadges").innerHTML = [
       `${leadIngredient} 시작일 대비 ${formatPct(leadGrowth)}`,
       `현재 보기 ${activeOption.label}`,
-      `제품 수 ${formatNumber(leadProduct?.product_count || 0)}개`,
+      leadProduct ? `제품 수 ${formatNumber(leadProduct.product_count)}개` : "제품 수 연결 중",
       marketStatus,
     ].map((label, index) => `
       <span class="trend-badge ${index === 0 ? "primary" : ""}">${escapeHtml(label)}</span>
     `).join("");
 
-    const concernMetrics = [
-      ["wrinkleElasticity", "주름/탄력", "elasticity"],
-      ["toneSpot", "잡티/톤", "texture"],
-      ["troubleCalming", "트러블/진정", "calming"],
-      ["drynessBarrier", "건조/장벽", "barrier"],
-    ];
-    const concernValues = page.concernTable.flatMap((row) => concernMetrics.map(([key, , legacyKey]) => Number(row[key] ?? row[legacyKey] ?? 0)));
-    const maxConcernValue = Math.max(...concernValues, 1);
-    qs("#concernHeatmap").innerHTML = `
-      <div class="heatmap-grid" style="--heatmap-columns:${concernMetrics.length}">
-        <div class="heatmap-head">연령대</div>
-        ${concernMetrics.map(([, label]) => `<div class="heatmap-head">${escapeHtml(label)}</div>`).join("")}
-        ${page.concernTable.map((row) => `
-          <div class="heatmap-age">${escapeHtml(row.age)}</div>
-          ${concernMetrics.map(([key, , legacyKey]) => {
-            const value = Number(row[key] ?? row[legacyKey] ?? 0);
-            const intensity = Math.max(0.12, value / maxConcernValue);
-            const alpha = 0.1 + (intensity * 0.72);
-            return `
-              <div class="heatmap-cell" style="background: rgba(9, 95, 233, ${alpha.toFixed(3)})">
-              <strong>${formatNumber(value)}</strong>
-              </div>
-            `;
-          }).join("")}
-        `).join("")}
-      </div>
-      <div class="heatmap-legend">
-        <span>낮음</span>
-        <div></div>
-        <span>높음</span>
-      </div>
-    `;
+    const concernMetrics = (page.concernMetrics?.length ? page.concernMetrics : FALLBACK_DATA.page2.concernMetrics)
+      .map((item) => [item.key, item.label, item.legacyKey]);
+    const concernTable = page.concernTable || [];
+    if (!concernTable.length) {
+      const message = DATA_LOAD_STATE.dashboardSignals === "error"
+        ? `Naver DataLab API 오류: ${DATA_LOAD_STATE.dashboardSignalsError}`
+        : "Naver DataLab API에서 연령대별 피부 고민 데이터를 불러오는 중입니다.";
+      qs("#concernHeatmap").innerHTML = `<div class="empty-state api-state">${escapeHtml(message)}</div>`;
+    } else {
+      const concernValues = concernTable.flatMap((row) => concernMetrics.map(([key, , legacyKey]) => Number(row[key] ?? row[legacyKey] ?? 0)));
+      const maxConcernValue = Math.max(...concernValues, 1);
+      qs("#concernHeatmap").innerHTML = `
+        <div class="heatmap-grid" style="--heatmap-columns:${concernMetrics.length}">
+          <div class="heatmap-head">연령대</div>
+          ${concernMetrics.map(([, label]) => `<div class="heatmap-head">${escapeHtml(label)}</div>`).join("")}
+          ${concernTable.map((row) => `
+            <div class="heatmap-age">${escapeHtml(row.age)}</div>
+            ${concernMetrics.map(([key, , legacyKey]) => {
+              const value = Number(row[key] ?? row[legacyKey] ?? 0);
+              const intensity = Math.max(0.12, value / maxConcernValue);
+              const alpha = 0.1 + (intensity * 0.72);
+              return `
+                <div class="heatmap-cell" style="background: rgba(9, 95, 233, ${alpha.toFixed(3)})">
+                <strong>${formatNumber(value)}</strong>
+                </div>
+              `;
+            }).join("")}
+          `).join("")}
+        </div>
+        <div class="heatmap-legend">
+          <span>낮음</span>
+          <div></div>
+          <span>높음</span>
+        </div>
+      `;
+    }
     renderInsightList("searchInsights", page.insights);
   }
 
@@ -788,6 +849,11 @@
 
   function renderMarketProductPlot() {
     const products = getMarketProducts();
+    const container = qs("#marketProductBarPlot");
+    if (!products.length) {
+      if (container) container.innerHTML = '<div class="empty-state api-state">전처리 제품 데이터를 불러오는 중입니다.</div>';
+      return;
+    }
     const labels = products.map((item) => item.ingredient_label).reverse();
     const counts = products.map((item) => item.product_count).reverse();
     drawPlot("marketProductBarPlot", [{
@@ -809,6 +875,14 @@
 
   function renderSearchTrendPlot() {
     const trend = DATA.page2.searchTrend;
+    const container = qs("#searchTrendPlot");
+    if (!trend?.dates?.length || !trend?.series?.length) {
+      const message = DATA_LOAD_STATE.searchTrend === "error"
+        ? `Naver DataLab API 오류: ${DATA_LOAD_STATE.searchTrendError}`
+        : "Naver DataLab API에서 검색 관심도 추이를 불러오는 중입니다.";
+      if (container) container.innerHTML = `<div class="empty-state api-state">${escapeHtml(message)}</div>`;
+      return;
+    }
     const traces = trend.series.map((item) => ({
       type: "scatter",
       mode: "lines+markers",
@@ -948,8 +1022,7 @@
     bindSearchPeriodControls();
     bindWindowEvents();
     renderChartsForPanel("A");
-    loadDatalabDashboardSignals();
-    loadDatalabSearchTrend();
+    loadDatalabData();
   }
 
   window.renderDataStatus = renderDataStatus;

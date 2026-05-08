@@ -1,7 +1,8 @@
 const dashboardMeta = {
-  dataRange: "2025.04.30 ~ 2025.05.05",
-  lastUpdated: "2025.05.05 23:59",
-  comparisonLabel: "전주 대비",
+  dataRange: "Naver DataLab 연결 중",
+  lastUpdated: "-",
+  comparisonLabel: "기간 내 전반부 대비 후반부",
+  apiSource: "",
 };
 
 const page1Summary = {
@@ -16,20 +17,8 @@ window.DASHBOARD_DATA = {
   meta: dashboardMeta,
   page1Summary,
   page1: {
-    functionRisers: [
-      { label: "탄력/주름 개선", growth: 31.2, searchIndex: 96 },
-      { label: "피부결 개선", growth: 26.8, searchIndex: 89 },
-      { label: "장벽 강화", growth: 22.4, searchIndex: 83 },
-      { label: "진정/붉은기 완화", growth: 19.7, searchIndex: 78 },
-      { label: "광채/톤 개선", growth: 15.9, searchIndex: 72 },
-    ],
-    ingredientPopularity: [
-      { label: "나이아신아마이드", growth: 17.6, searchIndex: 100 },
-      { label: "히알루론산", growth: 12.4, searchIndex: 89 },
-      { label: "병풀/시카", growth: 9.8, searchIndex: 83 },
-      { label: "PDRN", growth: 21.1, searchIndex: 78 },
-      { label: "레티놀", growth: 24.8, searchIndex: 72 },
-    ],
+    functionRisers: [],
+    ingredientPopularity: [],
     priceDistribution: [
       { ingredient: "레티놀", prices: [19800, 22900, 27800, 31900, 34900, 39800, 45900, 52000, 61000] },
       { ingredient: "PDRN", prices: [24900, 29900, 33800, 38900, 43500, 48900, 56000, 64800, 72000] },
@@ -54,49 +43,21 @@ window.DASHBOARD_DATA = {
     ],
   },
   page2: {
-    periodLabel: "2025.04.30 ~ 2025.05.05",
+    periodLabel: "Naver DataLab 연결 중",
     selectedIngredient: "나이아신아마이드",
-    selectedSummary: {
-      weeklySearchVolume: 98400,
-      growthRate: 17.6,
-      peakDate: "2025.05.05",
-      leadingConcern: "광채/톤 개선",
-    },
-    searchTrend: {
-      dates: ["2025.04.30", "2025.05.01", "2025.05.02", "2025.05.03", "2025.05.04", "2025.05.05"],
-      series: [
-        { ingredient: "나이아신아마이드", values: [64, 68, 72, 78, 82, 86], color: "#E6A23C" },
-        { ingredient: "히알루론산", values: [58, 61, 66, 70, 73, 77], color: "#8B7CC8" },
-        { ingredient: "병풀/시카", values: [52, 56, 59, 63, 67, 71], color: "#5AAA6E" },
-        { ingredient: "PDRN", values: [68, 72, 76, 84, 88, 91], color: "#2CA6A4" },
-        { ingredient: "레티놀", values: [72, 79, 88, 100, 94, 97], color: "#3B66A6" },
-      ],
-    },
-    marketProducts: [
-      // 전처리 완료 데이터 반영 전 임시값입니다. TODO: 전처리 완료 제품 수 데이터 연결 후 교체
-      { ingredient_key: "niacinamide", ingredient_label: "나이아신아마이드", product_count: 128, unique_product_count: 118, brand_count: 43, crawl_start: "2025-05-01", crawl_end: "2025-05-07", source: "oliveyoung", is_mock: true },
-      { ingredient_key: "hyaluronic_acid", ingredient_label: "히알루론산", product_count: 96, unique_product_count: 89, brand_count: 36, crawl_start: "2025-05-01", crawl_end: "2025-05-07", source: "oliveyoung", is_mock: true },
-      { ingredient_key: "centella", ingredient_label: "병풀/시카", product_count: 74, unique_product_count: 69, brand_count: 30, crawl_start: "2025-05-01", crawl_end: "2025-05-07", source: "oliveyoung", is_mock: true },
-      { ingredient_key: "retinol", ingredient_label: "레티놀", product_count: 49, unique_product_count: 45, brand_count: 21, crawl_start: "2025-05-01", crawl_end: "2025-05-07", source: "oliveyoung", is_mock: true },
-      { ingredient_key: "pdrn", ingredient_label: "PDRN", product_count: 27, unique_product_count: 25, brand_count: 13, crawl_start: "2025-05-01", crawl_end: "2025-05-07", source: "oliveyoung", is_mock: true },
+    selectedSummary: {},
+    searchTrend: { dates: [], series: [] },
+    concernMetrics: [
+      { key: "wrinkleElasticity", label: "주름/탄력" },
+      { key: "toneSpot", label: "잡티/톤" },
+      { key: "troubleCalming", label: "트러블/진정" },
+      { key: "drynessBarrier", label: "건조/장벽" },
+      { key: "poreSebum", label: "모공/피지" },
     ],
-    concernTable: [
-      { age: "20대", wrinkleElasticity: 52, toneSpot: 76, troubleCalming: 84, drynessBarrier: 61 },
-      { age: "30대", wrinkleElasticity: 78, toneSpot: 82, troubleCalming: 58, drynessBarrier: 68 },
-      { age: "40대", wrinkleElasticity: 100, toneSpot: 74, troubleCalming: 42, drynessBarrier: 63 },
-      { age: "50대+", wrinkleElasticity: 88, toneSpot: 56, troubleCalming: 31, drynessBarrier: 72 },
-    ],
-    ageTopIngredients: [
-      { age: "20대", top: ["나이아신아마이드", "판테놀", "레티놀"] },
-      { age: "30대", top: ["레티놀", "PDRN", "세라마이드"] },
-      { age: "40대", top: ["레티놀", "아데노신", "PDRN"] },
-      { age: "50대+", top: ["레티놀", "펩타이드", "세라마이드"] },
-    ],
-    insights: [
-      "나이아신아마이드는 mock 기준 성분 검색 관심도 지수 상위권이며, API 연결 성공 시 DataLab ratio 기반 값으로 교체됩니다.",
-      "30~40대의 주름/탄력 집중도가 높아 레티놀·PDRN 중심의 안티에이징 메시지와 궁합이 좋습니다.",
-      "PDRN은 임시 제품 수 대비 검색 관심도 변화가 커서 비교 콘텐츠 테스트 후보입니다.",
-    ],
+    marketProducts: [],
+    concernTable: [],
+    ageTopIngredients: [],
+    insights: [],
   },
   page3: {
     ingredient: "레티놀",

@@ -255,3 +255,4 @@ tbody tr:hover { background: #fbfdff; }
   .rank-value { grid-column: 2; text-align: left; }
   .plot-shell { min-height: 300px; }
 }
+.api-state { min-height: 120px; display: flex; align-items: center; justify-content: center; text-align: center; line-height: 1.6; }
