@@ -351,7 +351,7 @@ def extract_main_ingredients_with_gpt_ocr(
             return ""
 
         response = client.chat.completions.create(
-            model=os.getenv("OPENAI_OCR_MODEL", "gpt-5.4"),
+            model=os.getenv("OPENAI_OCR_MODEL", "gpt-5.4-mini"),
             messages=[{"role": "user", "content": content}],
             max_completion_tokens=2000,
         )
