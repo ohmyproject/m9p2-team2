@@ -61,6 +61,22 @@ NOTICE_FIELD_ALIASES = {
     "소비자상담 전화번호": "소비자상담전화번호",
 }
 
+_CROP_URL_RE = re.compile(r"/crop\d+/(image\.oliveyoung\.co\.kr/.+?)(?:\?|$)")
+
+
+def normalize_detail_image_url(url: str) -> str:
+    """
+    /html/crop/.../cropN/image.oliveyoung.co.kr/... 형태의 URL을 원본으로 복원합니다.
+    crop0~cropN은 동일 이미지를 세로로 분할한 것이므로 원본 1장으로 통일합니다.
+    """
+    m = _CROP_URL_RE.search(url)
+    if m:
+        return "https://" + m.group(1)
+    if "oliveyoung.co.kr" in url:
+        return url.split("?")[0]
+    return url
+
+
 DETAIL_IMAGE_SELECTORS = [
     "#goodsDetailContent img",
     "#goodsDetailInfo img",
@@ -198,7 +214,7 @@ def extract_detail_image_urls(soup: BeautifulSoup) -> list[str]:
 
     for selector in DETAIL_IMAGE_SELECTORS:
         for image_tag in soup.select(selector):
-            image_url = image_url_from_tag(image_tag)
+            image_url = normalize_detail_image_url(image_url_from_tag(image_tag))
 
             if not image_url or image_url in seen_urls:
                 continue
@@ -213,7 +229,7 @@ def extract_detail_image_urls(soup: BeautifulSoup) -> list[str]:
         return image_urls
 
     for image_tag in soup.find_all("img"):
-        image_url = image_url_from_tag(image_tag)
+        image_url = normalize_detail_image_url(image_url_from_tag(image_tag))
 
         if not image_url or image_url in seen_urls:
             continue

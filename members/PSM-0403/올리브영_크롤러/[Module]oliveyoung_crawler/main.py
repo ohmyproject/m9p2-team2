@@ -9,7 +9,7 @@ from oliveyoung_crawler.run_pipeline import run_pipeline
 TOTAL_PAGES         = 1
 
 # 최대 상품 수 (None이면 제한 없음)
-MAX_PRODUCTS        = 2
+MAX_PRODUCTS        = 5
 
 # 올리브영 카테고리
 MAJOR_CATEGORY      = "스킨케어"
@@ -22,7 +22,7 @@ MIDDLE_CATEGORY     = "에센스/세럼/앰플"
 SORTS               = "best,new"
 
 # 상품 1개당 리뷰 수집 개수
-REVIEWS_PER_PRODUCT = 10
+REVIEWS_PER_PRODUCT = 3
 
 # 크롬 버전 (None이면 자동 감지)
 CHROME_VERSION      = 147
