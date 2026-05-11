@@ -1,0 +1,10 @@
+
+
+리뷰 다시 크롤링 review_only_main.py
+
+전체다
+python review_only_main.py --all --reviews-per-product 10
+
+특정것만 
+python review_only_main.py --data-file "Data/2026-05-02_204126_Data(oliveyoung)_신상품순.csv" --reviews-per-product 10
+
