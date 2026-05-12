@@ -1,0 +1,10 @@
+pandas
+selenium
+beautifulsoup4
+openai
+python-dotenv
+sqlalchemy
+psycopg2-binary
+fastapi
+uvicorn
+requests
