@@ -7,26 +7,33 @@ import {
   fetchDemandSupplyMatrixFromSupabase,
 } from "@/lib/demand-supply-matrix";
 import { fetchPriceDistributionFromSupabase, getEmptyPriceDistribution } from "@/lib/price-distribution";
+import { IngredientSelect } from "@/components/review-analysis/IngredientSelect";
+import { KeywordCards } from "@/components/review-analysis/KeywordCards";
+import { OpportunityInsights } from "@/components/review-analysis/OpportunityInsights";
+import { SentimentDonutChart } from "@/components/review-analysis/SentimentDonutChart";
+import { SkinTypeSentimentTable } from "@/components/review-analysis/SkinTypeSentimentTable";
+import { TopReviewProducts } from "@/components/review-analysis/TopReviewProducts";
 import { createClient } from "@/utils/supabase/client";
+import type { ReviewAnalysisResult } from "@/lib/reviewAnalysis";
 import type {
   AlertItem,
   ConcernMetric,
   DashboardData,
   DashboardMeta,
   DemandSupplyItem,
-  Keyword,
   MarketProduct,
   Page1Summary,
   PriceDistributionItem,
   PriceDistributionPoint,
   RankItem,
-  ReviewIngredient,
   SearchTrendSeries,
 } from "@/lib/types";
 
 type TabId = "A" | "B" | "C" | "D" | "E";
 type PriceType = "sale" | "list";
 type ApiState = "idle" | "loading" | "ready" | "error";
+type IngredientRankingSource = "naver" | "oliveyoung";
+type TrendIngredientSet = "main" | "opportunity";
 
 type DataLoadState = {
   dashboardSignals: ApiState;
@@ -41,7 +48,8 @@ type DataLoadState = {
   page1InsightsError: string;
 };
 
-type DashboardSignalsPayload = Omit<Partial<DashboardData>, "page1" | "page2"> & {
+type DashboardSignalsPayload = Omit<Partial<DashboardData>, "page1" | "page2" | "page1Summary"> & {
+  page1Summary?: Partial<Page1Summary>;
   page1?: Partial<DashboardData["page1"]>;
   page2?: Partial<DashboardData["page2"]>;
 };
@@ -72,6 +80,16 @@ const MAIN_INGREDIENTS = [
   { key: "retinol", label: "레티놀" },
 ];
 
+const INGREDIENT_RANKING_SOURCE_OPTIONS: Array<{ key: IngredientRankingSource; label: string }> = [
+  { key: "naver", label: "네이버" },
+  { key: "oliveyoung", label: "올리브영" },
+];
+
+const TREND_INGREDIENT_SET_OPTIONS: Array<{ key: TrendIngredientSet; label: string }> = [
+  { key: "main", label: "주요 성분" },
+  { key: "opportunity", label: "기회 성분" },
+];
+
 type RankingProduct = {
   collected_date?: string;
   sort_type?: string;
@@ -95,6 +113,7 @@ type DatalabWeeklyInterestResponse = {
   meta?: Partial<DashboardMeta> & { source?: string };
   page1?: {
     functionRisers?: unknown;
+    functionDemand?: unknown;
     ingredientPopularity?: unknown;
     ingredientDemand?: unknown;
   };
@@ -135,6 +154,20 @@ const STATUS_COLORS: Record<DemandSupplyItem["status"], string> = {
 const MATRIX_STATUS_KEYS: DemandSupplyItem["status"][] = ["growth", "opportunity", "oversupply", "stable"];
 
 const CHART_COLORS = ["#2563eb", "#14b8a6", "#f59e0b", "#8b5cf6", "#64748b"];
+const EXTENDED_TREND_COLORS = [
+  "#E6A23C",
+  "#8B7CC8",
+  "#5AAA6E",
+  "#2CA6A4",
+  "#3B66A6",
+  "#C97A9B",
+  "#7B8493",
+  "#D96A7A",
+];
+
+function getTrendColor(label: string, index = 0) {
+  return DATALAB_TREND_COLORS[label] || EXTENDED_TREND_COLORS[index % EXTENDED_TREND_COLORS.length] || "#6B7280";
+}
 
 const INITIAL_DASHBOARD_DATA = {
   ...dashboardData,
@@ -191,16 +224,28 @@ async function fetchLocalJson<T>(path: string, options?: RequestInit): Promise<T
 }
 
 async function fetchCurrentApiDashboardSignals(): Promise<DashboardSignalsPayload> {
-  const [summaryResult, weeklyResult] = await Promise.allSettled([
+  const [summaryResult, weeklyResult, snapshotSummaryResult] = await Promise.allSettled([
     fetchDatalabJson<DashboardSummaryResponse>("/dashboard/summary"),
     fetchLocalJson<DatalabWeeklyInterestResponse>("/api/dashboard/datalab-weekly-interest"),
+    fetchSnapshotPage1SummaryFromSupabase(),
   ]);
   const summary = summaryResult.status === "fulfilled" ? summaryResult.value : {};
   const weekly = weeklyResult.status === "fulfilled" ? weeklyResult.value : {};
+  const snapshotSummary = snapshotSummaryResult.status === "fulfilled" ? snapshotSummaryResult.value : null;
   const summaryPayload = normalizeDashboardSummary(summary);
   const weeklyPayload = normalizeDatalabWeeklyInterest(weekly);
   const functionRisers = weeklyPayload.page1?.functionRisers || [];
   const ingredientPopularity = weeklyPayload.page1?.ingredientPopularity || [];
+  const functionDemand = normalizeDatalabWeeklyRankItems(
+    weekly.page1?.functionDemand || weekly.page1?.functionRisers,
+    "growth",
+    null,
+  );
+  const ingredientDemand = normalizeDatalabWeeklyRankItems(
+    weekly.page1?.ingredientDemand || weekly.page1?.ingredientPopularity,
+    "searchIndex",
+    null,
+  );
 
   if (summaryResult.status === "rejected") {
     console.error("FastAPI /dashboard/summary 조회 실패", summaryResult.reason);
@@ -208,6 +253,10 @@ async function fetchCurrentApiDashboardSignals(): Promise<DashboardSignalsPayloa
 
   if (weeklyResult.status === "rejected") {
     console.error("Naver DataLab 주간 검색 관심도 직접 조회 실패", weeklyResult.reason);
+  }
+
+  if (snapshotSummaryResult.status === "rejected") {
+    console.error("Supabase 1페이지 분석 대상 요약 조회 실패", snapshotSummaryResult.reason);
   }
 
   return {
@@ -220,11 +269,9 @@ async function fetchCurrentApiDashboardSignals(): Promise<DashboardSignalsPayloa
       comparisonLabel: "전주 대비 증감률",
     },
     page1Summary: {
-      analyzedProducts: summaryPayload.page1Summary?.analyzedProducts || 0,
-      analyzedIngredients: summaryPayload.page1Summary?.analyzedIngredients || 0,
-      totalSearchGrowthRate: getAverageGrowth([...functionRisers, ...ingredientPopularity]),
-      risingIngredientCount: functionRisers.length,
-      supplyShortageIngredientCount: summaryPayload.page1Summary?.supplyShortageIngredientCount || 0,
+      analyzedProducts: snapshotSummary?.analyzedProducts ?? summaryPayload.page1Summary?.analyzedProducts ?? 0,
+      analyzedIngredients: snapshotSummary?.analyzedIngredients ?? summaryPayload.page1Summary?.analyzedIngredients ?? 0,
+      totalSearchGrowthRate: getCombinedSearchGrowth([...functionDemand, ...ingredientDemand]),
     },
     page1: {
       ...summaryPayload.page1,
@@ -285,7 +332,7 @@ function normalizeDashboardSummary(summary: DashboardSummaryResponse): Dashboard
   };
 }
 
-function normalizeDatalabWeeklyRankItems(items: unknown, sortBy: "growth" | "searchIndex"): RankItem[] {
+function normalizeDatalabWeeklyRankItems(items: unknown, sortBy: "growth" | "searchIndex", limit: number | null = 5): RankItem[] {
   if (!Array.isArray(items)) return [];
   const rows: RankItem[] = [];
 
@@ -334,10 +381,13 @@ function normalizeDatalabWeeklyRankItems(items: unknown, sortBy: "growth" | "sea
       label,
       growth,
       searchIndex: currentWeekIndex,
+      currentWeekIndex,
+      previousWeekIndex,
     });
   });
 
-  return sortDatalabRankItems(rows, sortBy).slice(0, 5);
+  const sortedRows = sortDatalabRankItems(rows, sortBy);
+  return limit === null ? sortedRows : sortedRows.slice(0, limit);
 }
 
 function sortDatalabRankItems(items: RankItem[], sortBy: "growth" | "searchIndex") {
@@ -354,6 +404,22 @@ function getAverageGrowth(items: RankItem[]) {
   const growthValues = items.map((item) => Number(item.growth || 0)).filter((value) => Number.isFinite(value));
   if (!growthValues.length) return 0;
   return growthValues.reduce((sum, value) => sum + value, 0) / growthValues.length;
+}
+
+function getCombinedSearchGrowth(items: RankItem[]) {
+  const totals = items.reduce(
+    (sum, item) => {
+      const current = Number(item.currentWeekIndex ?? item.searchIndex ?? 0);
+      const previous = Number(item.previousWeekIndex ?? 0);
+      if (Number.isFinite(current)) sum.current += current;
+      if (Number.isFinite(previous)) sum.previous += previous;
+      return sum;
+    },
+    { current: 0, previous: 0 },
+  );
+
+  if (totals.previous <= 0) return totals.current > 0 ? 100 : 0;
+  return roundNumber(((totals.current - totals.previous) / totals.previous) * 100, 1);
 }
 
 function getFirstFiniteNumber(row: Record<string, unknown>, keys: string[]) {
@@ -449,8 +515,16 @@ function mergePriceDistribution(current: DashboardData, priceDistribution: Price
 }
 
 function mergeDemandSupplyMatrix(current: DashboardData, demandSupplyMatrix: DemandSupplyItem[]) {
+  const newProductCandidateCount = demandSupplyMatrix.filter((item) => item.status === "opportunity" || item.status === "shortage").length;
+  const inventoryRiskCount = demandSupplyMatrix.filter((item) => item.status === "oversupply").length;
+
   return {
     ...current,
+    page1Summary: {
+      ...current.page1Summary,
+      risingIngredientCount: newProductCandidateCount,
+      supplyShortageIngredientCount: inventoryRiskCount,
+    },
     page1: {
       ...current.page1,
       demandSupplyMatrix,
@@ -488,6 +562,7 @@ function calculateSeriesGrowth(series?: SearchTrendSeries, fallback = 0) {
 const MARKET_PRODUCT_TABLE_CANDIDATES = ["product_main_ingredients", "main_ingrdients", "main_ingredients"] as const;
 const MARKET_INGREDIENT_SELECT_CANDIDATES = [
   "goods_no, ingredient_name",
+  "goods_no, main_ingredients",
   "goods_no, main_ingredient",
   "goods_no, ingredient",
   "goods_no, ingredient_label",
@@ -497,6 +572,19 @@ const MARKET_SNAPSHOT_SELECT_CANDIDATES = [
   "goods_no, collected_date",
   "goods_no, snapshot_date",
   "goods_no, created_at",
+] as const;
+const SUMMARY_PAGE_SIZE = 1000;
+const OLIVEYOUNG_RANKING_SELECT_CANDIDATES = [
+  "goods_no, ranking_rank:rank, collected_date, sort_type",
+  "goods_no, ranking_rank:rank, snapshot_date, sort_type",
+  "goods_no, ranking_rank:rank, created_at, sort_type",
+  "goods_no, ranking_rank:rank, collected_date",
+  "goods_no, ranking_rank:rank",
+  "goods_no, rank, collected_date, sort_type",
+  "goods_no, rank, snapshot_date, sort_type",
+  "goods_no, rank, created_at, sort_type",
+  "goods_no, rank, collected_date",
+  "goods_no, rank",
 ] as const;
 
 type MarketIngredientRow = Record<string, unknown> & {
@@ -510,6 +598,16 @@ type MarketSnapshotRow = Record<string, unknown> & {
   created_at?: string | null;
 };
 
+type OliveYoungRankingRow = Record<string, unknown> & {
+  goods_no?: string | number | null;
+  rank?: string | number | null;
+  ranking_rank?: string | number | null;
+  collected_date?: string | null;
+  snapshot_date?: string | null;
+  created_at?: string | null;
+  sort_type?: string | null;
+};
+
 function normalizeMarketText(value: unknown) {
   return String(value ?? "").trim().toLowerCase();
 }
@@ -517,6 +615,7 @@ function normalizeMarketText(value: unknown) {
 function getMarketIngredientName(row: MarketIngredientRow) {
   return String(
     row.ingredient_name ??
+    row.main_ingredients ??
     row.main_ingredient ??
     row.ingredient ??
     row.ingredient_label ??
@@ -565,6 +664,57 @@ async function selectMarketRows<T extends Record<string, unknown>>(
   }
 
   throw new Error(`${table}에서 필요한 컬럼을 찾지 못했습니다.`);
+}
+
+async function fetchSnapshotPage1SummaryFromSupabase(): Promise<Pick<Page1Summary, "analyzedProducts" | "analyzedIngredients">> {
+  const supabase = createClient();
+  const { data: latestRows, error: latestError } = await supabase
+    .from("product_snapshots")
+    .select("collected_date")
+    .order("collected_date", { ascending: false })
+    .limit(1);
+
+  if (latestError) throw new Error(`product_snapshots 최신일 조회 실패: ${latestError.message}`);
+
+  const latestDate = String(latestRows?.[0]?.collected_date || "").slice(0, 10);
+  if (!latestDate) return { analyzedProducts: 0, analyzedIngredients: 0 };
+
+  const startDate = toDateStringFromDate(addDays(new Date(latestDate), -6));
+  const goodsNos = new Set<string>();
+
+  for (let from = 0; ; from += SUMMARY_PAGE_SIZE) {
+    const { data, error } = await supabase
+      .from("product_snapshots")
+      .select("goods_no, collected_date")
+      .gte("collected_date", startDate)
+      .lte("collected_date", latestDate)
+      .range(from, from + SUMMARY_PAGE_SIZE - 1);
+
+    if (error) throw new Error(`product_snapshots 7일 분석 대상 조회 실패: ${error.message}`);
+
+    const page = (data || []) as unknown as Array<{ goods_no?: string | number | null }>;
+    page.forEach((row) => {
+      const goodsNo = String(row.goods_no ?? "").trim();
+      if (goodsNo) goodsNos.add(goodsNo);
+    });
+
+    if (page.length < SUMMARY_PAGE_SIZE) break;
+  }
+
+  if (!goodsNos.size) return { analyzedProducts: 0, analyzedIngredients: 0 };
+
+  const ingredientRows = await fetchIngredientRowsForGoodsNos(Array.from(goodsNos));
+  const ingredientNames = new Set<string>();
+
+  ingredientRows.forEach((row) => {
+    const ingredientName = getMarketIngredientName(row);
+    if (ingredientName) ingredientNames.add(ingredientName);
+  });
+
+  return {
+    analyzedProducts: goodsNos.size,
+    analyzedIngredients: ingredientNames.size,
+  };
 }
 
 async function fetchMarketProductsFromSupabase(ingredientLabels: string[]): Promise<MarketProduct[]> {
@@ -647,6 +797,177 @@ async function fetchMarketProductsFromSupabase(ingredientLabels: string[]): Prom
   });
 }
 
+async function fetchOliveYoungIngredientPopularityFromSupabase(): Promise<RankItem[]> {
+  const supabase = createClient();
+  let rankingRows: OliveYoungRankingRow[] = [];
+  let lastRankingError = "";
+
+  for (const selectQuery of OLIVEYOUNG_RANKING_SELECT_CANDIDATES) {
+    const { data, error } = await supabase
+      .from("product_rankings")
+      .select(selectQuery as string)
+      .limit(10000);
+
+    if (!error) {
+      rankingRows = (data || []) as unknown as OliveYoungRankingRow[];
+      break;
+    }
+
+    lastRankingError = error.message;
+    console.error("Supabase product_rankings 조회 실패", { selectQuery, message: error.message });
+  }
+
+  if (!rankingRows.length) {
+    throw new Error(lastRankingError || "product_rankings에서 랭킹 데이터를 찾지 못했습니다.");
+  }
+
+  const latestRankingRows = filterPreferredRankingRows(filterLatestRankingRows(rankingRows));
+  const rankByGoodsNo = new Map<string, number>();
+
+  latestRankingRows.forEach((row) => {
+    const goodsNo = String(row.goods_no ?? "").trim();
+    const rank = toFiniteRank(row.rank ?? row.ranking_rank);
+    if (!goodsNo || rank === null) return;
+    const currentRank = rankByGoodsNo.get(goodsNo);
+    if (currentRank === undefined || rank < currentRank) rankByGoodsNo.set(goodsNo, rank);
+  });
+
+  if (!rankByGoodsNo.size) {
+    throw new Error("product_rankings.rank 기준으로 집계할 상품이 없습니다.");
+  }
+
+  const ingredientRows = await fetchIngredientRowsForGoodsNos(Array.from(rankByGoodsNo.keys()));
+  const maxRank = Math.max(...Array.from(rankByGoodsNo.values()), 1);
+  const byIngredient = new Map<string, { ranks: number[]; goodsNos: Set<string>; score: number }>();
+
+  ingredientRows.forEach((row) => {
+    const goodsNo = String(row.goods_no ?? "").trim();
+    const rank = rankByGoodsNo.get(goodsNo);
+    const ingredientName = getMarketIngredientName(row);
+    if (!goodsNo || rank === undefined || !ingredientName) return;
+
+    const current = byIngredient.get(ingredientName) || { ranks: [], goodsNos: new Set<string>(), score: 0 };
+    if (current.goodsNos.has(goodsNo)) return;
+
+    current.goodsNos.add(goodsNo);
+    current.ranks.push(rank);
+    current.score += maxRank - rank + 1;
+    byIngredient.set(ingredientName, current);
+  });
+
+  const rows = Array.from(byIngredient.entries())
+    .map(([label, item]) => {
+      const averageRank = item.ranks.reduce((sum, rank) => sum + rank, 0) / item.ranks.length;
+      return {
+        label,
+        score: item.score,
+        searchIndex: item.score,
+        averageRank: roundNumber(averageRank, 1),
+        bestRank: Math.min(...item.ranks),
+        productCount: item.goodsNos.size,
+      } satisfies RankItem;
+    })
+    .sort((a, b) =>
+      Number(b.score || 0) - Number(a.score || 0) ||
+      Number(a.averageRank || Number.MAX_SAFE_INTEGER) - Number(b.averageRank || Number.MAX_SAFE_INTEGER) ||
+      Number(b.productCount || 0) - Number(a.productCount || 0),
+    );
+
+  const maxScore = Math.max(...rows.map((row) => Number(row.score || 0)), 1);
+  return rows.slice(0, 5).map((row) => ({
+    ...row,
+    searchIndex: roundNumber((Number(row.score || 0) / maxScore) * 100, 1),
+  }));
+}
+
+async function fetchIngredientRowsForGoodsNos(goodsNos: string[]) {
+  const supabase = createClient();
+  let lastError = "";
+
+  for (const selectQuery of MARKET_INGREDIENT_SELECT_CANDIDATES) {
+    const rows: MarketIngredientRow[] = [];
+    let hasError = false;
+
+    for (const goodsNoChunk of chunkArray(goodsNos, 180)) {
+      const { data, error } = await supabase
+        .from("product_main_ingredients")
+        .select(selectQuery as string)
+        .in("goods_no", goodsNoChunk)
+        .limit(10000);
+
+      if (error) {
+        lastError = error.message;
+        hasError = true;
+        console.error("Supabase product_main_ingredients 조인 조회 실패", { selectQuery, message: error.message });
+        break;
+      }
+
+      rows.push(...((data || []) as unknown as MarketIngredientRow[]));
+    }
+
+    if (!hasError) return rows;
+  }
+
+  throw new Error(lastError || "product_main_ingredients에서 성분 컬럼을 찾지 못했습니다.");
+}
+
+function filterLatestRankingRows(rows: OliveYoungRankingRow[]) {
+  const datedRows = rows
+    .map((row) => ({ row, date: getRankingDate(row) }))
+    .filter((item) => item.date);
+  const latestDate = datedRows.map((item) => item.date).sort().at(-1);
+  if (!latestDate) return rows;
+
+  return datedRows.filter((item) => item.date === latestDate).map((item) => item.row);
+}
+
+function filterPreferredRankingRows(rows: OliveYoungRankingRow[]) {
+  const salesRows = rows.filter((row) => /판매|sale/i.test(String(row.sort_type || "")));
+  if (salesRows.length) return salesRows;
+
+  const popularityRows = rows.filter((row) => /인기|popular|ranking|랭킹/i.test(String(row.sort_type || "")));
+  return popularityRows.length ? popularityRows : rows;
+}
+
+function getRankingDate(row: OliveYoungRankingRow) {
+  return String(row.collected_date ?? row.snapshot_date ?? row.created_at ?? "").slice(0, 10);
+}
+
+function toFiniteRank(value: unknown) {
+  if (value === null || value === undefined || value === "") return null;
+  const rank = Number(String(value).replace(/,/g, ""));
+  return Number.isFinite(rank) && rank > 0 ? rank : null;
+}
+
+function getOpportunityIngredientLabels(items: DemandSupplyItem[]) {
+  const byLabel = new Map<string, DemandSupplyItem>();
+  const addItems = (rows: DemandSupplyItem[]) => {
+    rows.forEach((item) => {
+      if (!byLabel.has(item.ingredient)) byLabel.set(item.ingredient, item);
+    });
+  };
+
+  const priorityScore = (item: DemandSupplyItem) =>
+    Number(item.opportunityScore || 0) * 1.4 +
+    Math.max(0, Number(item.gap || 0)) +
+    Math.max(0, Number(item.demandWow ?? item.growth ?? 0)) * 0.35 +
+    Number(item.demand || 0) * 0.2;
+
+  addItems(items.filter((item) => item.status === "opportunity").sort((a, b) => priorityScore(b) - priorityScore(a)));
+  addItems(items.slice().sort((a, b) => priorityScore(b) - priorityScore(a)));
+
+  return Array.from(byLabel.keys()).slice(0, 5);
+}
+
+function getTrendIngredientLabels(ingredientSet: TrendIngredientSet, matrixItems: DemandSupplyItem[]) {
+  if (ingredientSet === "opportunity") {
+    const opportunityLabels = getOpportunityIngredientLabels(matrixItems);
+    if (opportunityLabels.length) return opportunityLabels;
+  }
+
+  return MAIN_INGREDIENTS.map((item) => item.label);
+}
+
 function addDays(date: Date, days: number) {
   const next = new Date(date);
   next.setDate(next.getDate() + days);
@@ -655,6 +976,14 @@ function addDays(date: Date, days: number) {
 
 function toDateStringFromDate(date: Date) {
   return date.toISOString().slice(0, 10);
+}
+
+function chunkArray<T>(items: T[], size: number) {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
 }
 
 function getRankBarWidth(item: RankItem, items: RankItem[], barMetric: "growth" | "searchIndex") {
@@ -802,6 +1131,117 @@ function buildPage1InsightPayload(data: DashboardData, loadState: DataLoadState)
   };
 }
 
+function buildPage1DecisionInsights(payload: ReturnType<typeof buildPage1InsightPayload>) {
+  const insights: string[] = [];
+  const topFunction = payload.functionTop5[0];
+  const topIngredient = payload.ingredientTop5[0];
+  const demandOpportunities = payload.demandSupplyMatrix
+    .map((item) => ({
+      ...item,
+      gap: Number(item.demandScore || 0) - Number(item.supplyScore || 0),
+    }))
+    .sort((a, b) => b.gap - a.gap);
+  const strongestOpportunity = demandOpportunities.find((item) => item.gap > 0);
+  const oversupplyRisk = demandOpportunities.slice().sort((a, b) => a.gap - b.gap).find((item) => item.gap < 0);
+  const priceOutlier = payload.priceOutliers[0];
+
+  if (topFunction) {
+    insights.push(`${topFunction.label} 기능 검색이 전주 대비 ${formatPct(topFunction.weekOverWeekGrowthRate)} 움직였습니다. 관련 성분과 효능 카피를 신제품 후보군 또는 기획전 테마로 우선 검토하세요.`);
+  }
+  if (topIngredient) {
+    insights.push(`${withTopicParticle(topIngredient.label)} 현재 성분 관심도 상위권입니다. 같은 효능군의 상품 수와 가격대를 함께 보고 주력 SKU 확대 여부를 판단하는 것이 좋습니다.`);
+  }
+  if (strongestOpportunity) {
+    insights.push(`${strongestOpportunity.ingredient}는 수요 점수(${strongestOpportunity.demandScore})가 공급 점수(${strongestOpportunity.supplyScore})보다 높아 기획 공백이 있습니다. 소싱, 샘플링, 상세페이지 효능 근거를 먼저 점검하세요.`);
+  }
+  if (oversupplyRisk) {
+    insights.push(`${oversupplyRisk.ingredient}는 공급 점수(${oversupplyRisk.supplyScore})가 수요 점수(${oversupplyRisk.demandScore})보다 높습니다. 재고와 광고비를 늘리기보다 차별 포인트가 있는 SKU 중심으로 압축하세요.`);
+  }
+  if (priceOutlier) {
+    insights.push(`${priceOutlier.ingredient} 고가 상품군은 10ml당 ${formatNumber(priceOutlier.pricePer10ml)}원 수준까지 형성되어 있습니다. 프리미엄 포지션은 용량 대비 효능 근거와 리뷰 증거를 함께 제시해야 합니다.`);
+  }
+
+  return ensureDashboardInsights(insights, [
+    "검색 관심도, 공급 점수, 가격 분포를 함께 보면 지금은 단일 지표보다 성분별 수요-공급 격차가 큰 후보부터 MD 리소스를 배분하는 편이 효율적입니다.",
+    "데이터가 일부 비어 있는 지표는 의사결정 확정 근거가 아니라 후보 선별 신호로만 사용하고, 실제 상품 상세와 리뷰 검증을 추가로 붙이세요.",
+  ]);
+}
+
+function buildPage2DecisionInsights(page2: DashboardData["page2"], marketProducts: MarketProduct[]) {
+  const insights: string[] = [];
+  const topCurrentSeries = page2.searchTrend.series
+    .slice()
+    .sort((a, b) => Number(b.values.at(-1) || 0) - Number(a.values.at(-1) || 0))[0];
+  const topGrowthSeries = page2.searchTrend.series
+    .map((series) => ({ ...series, growth: calculateSeriesGrowth(series) }))
+    .sort((a, b) => b.growth - a.growth)[0];
+  const strongestConcern = page2.concernTable.flatMap((row) =>
+    Object.entries(row)
+      .filter(([key]) => key !== "age")
+      .map(([key, value]) => ({
+        age: String(row.age),
+        label: getConcernMetricLabel(page2.concernMetrics, key),
+        value: Number(value || 0),
+      })),
+  ).sort((a, b) => b.value - a.value)[0];
+  const topMarketProduct = marketProducts.slice().sort((a, b) => b.product_count - a.product_count)[0];
+  const fastestMarketGrowth = marketProducts
+    .slice()
+    .sort((a, b) => getProductGrowth(b) - getProductGrowth(a))[0];
+
+  if (topCurrentSeries) {
+    insights.push(`${topCurrentSeries.ingredient}의 현재 검색 관심도가 가장 높습니다. 해당 성분은 노출 슬롯, 기획전 대표 상품, 비교 콘텐츠의 우선순위를 높게 둘 만합니다.`);
+  }
+  if (topGrowthSeries && Number.isFinite(topGrowthSeries.growth)) {
+    insights.push(`${withTopicParticle(topGrowthSeries.ingredient)} 선택 기간 초 대비 ${formatPct(topGrowthSeries.growth)} 변화했습니다. 상승 폭이 크다면 소량 테스트 SKU와 광고 소재 A/B 테스트로 빠르게 반응을 확인하세요.`);
+  }
+  if (strongestConcern) {
+    insights.push(`${strongestConcern.age}에서 ${strongestConcern.label} 고민 집중도가 가장 높습니다. 타깃 문구는 성분명보다 고민 해결 장면과 사용감 중심으로 설계하는 것이 좋습니다.`);
+  }
+  if (topMarketProduct) {
+    insights.push(`${withTopicParticle(topMarketProduct.ingredient_label)} 시장 제품 수가 ${formatNumber(topMarketProduct.product_count)}개로 가장 많습니다. 진입 시에는 가격, 제형, 핵심 효능 중 하나를 명확히 차별화해야 합니다.`);
+  }
+  if (fastestMarketGrowth && getProductGrowth(fastestMarketGrowth) > 0) {
+    insights.push(`${fastestMarketGrowth.ingredient_label} 제품 수가 전주 대비 ${formatPct(getProductGrowth(fastestMarketGrowth))} 증가했습니다. 공급이 빠르게 늘고 있어 출시 전 경쟁 상세페이지와 리뷰 약점을 먼저 확인하세요.`);
+  }
+
+  return ensureDashboardInsights(insights, page2.insights.length ? page2.insights : [
+    "검색 추이와 연령대 고민 데이터를 함께 보면 성분 자체보다 타깃 고민에 맞춘 효능 표현을 먼저 정하는 것이 MD 의사결정에 유리합니다.",
+    "제품 수가 많은 성분은 무리한 신규 진입보다 차별화된 제형, 용량, 가격 포지션을 먼저 좁히는 방식이 적합합니다.",
+  ]);
+}
+
+function getConcernMetricLabel(metrics: ConcernMetric[], key: string) {
+  return metrics.find((metric) => metric.key === key || metric.legacyKey === key)?.label || key;
+}
+
+function withTopicParticle(value: string) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const lastChar = Array.from(text).at(-1) || "";
+  const code = lastChar.charCodeAt(0);
+  const hasBatchim = code >= 0xac00 && code <= 0xd7a3 ? (code - 0xac00) % 28 > 0 : false;
+  return `${text}${hasBatchim ? "은" : "는"}`;
+}
+
+function ensureDashboardInsights(insights: string[], fallback: string[], minItems = 2, maxItems = 5) {
+  const unique: string[] = [];
+
+  insights.forEach((item) => {
+    const text = String(item || "").trim();
+    if (!text || unique.includes(text)) return;
+    unique.push(text);
+  });
+  fallback.forEach((item) => {
+    if (unique.length >= minItems) return;
+    const text = String(item || "").trim();
+    if (!text || unique.includes(text)) return;
+    unique.push(text);
+  });
+
+  return unique.slice(0, maxItems);
+}
+
 function roundNumber(value: number, digits = 0) {
   const factor = 10 ** digits;
   return Math.round(value * factor) / factor;
@@ -920,9 +1360,9 @@ function SummaryStrip({ summary }: { summary: Page1Summary }) {
   const items = [
     ["분석 제품 수", `${formatNumber(summary.analyzedProducts)}개`, "▯", ""],
     ["분석 성분 수", `${formatNumber(summary.analyzedIngredients)}개`, "◎", "green"],
-    ["전체 검색 관심도 증감률", formatPct(summary.totalSearchGrowthRate), "▴", "positive"],
-    ["급상승 성분 수", `${formatNumber(summary.risingIngredientCount)}개`, "⚡", "blue"],
-    ["공급 부족 성분 수", `${formatNumber(summary.supplyShortageIngredientCount)}개`, "△", "warning"],
+    ["시장 검색 관심도", formatPct(summary.totalSearchGrowthRate), "▴", "positive"],
+    ["신제품 기획 후보", `${formatNumber(summary.risingIngredientCount)}개`, "⚡", "blue"],
+    ["재고 리스크 성분", `${formatNumber(summary.supplyShortageIngredientCount)}개`, "△", "warning"],
   ];
 
   return (
@@ -945,20 +1385,26 @@ function RankList({
   valueLabel,
   barMetric,
   valueMetric = barMetric,
+  valueFormatter,
   isLoading,
   error,
+  emptyMessage = DATALAB_WEEKLY_API_REQUIRED_MESSAGE,
+  loadingMessage,
 }: {
   items: RankItem[];
   valueLabel: string;
   barMetric: "growth" | "searchIndex";
   valueMetric?: "growth" | "searchIndex";
+  valueFormatter?: (item: RankItem) => string;
   isLoading: boolean;
   error: string;
+  emptyMessage?: string;
+  loadingMessage?: string;
 }) {
   if (!items.length) {
     return (
       <div className="empty-state api-state">
-        {error || (isLoading ? "Naver DataLab API에서 데이터를 불러오는 중입니다." : DATALAB_WEEKLY_API_REQUIRED_MESSAGE)}
+        {error || (isLoading ? loadingMessage || emptyMessage : emptyMessage)}
       </div>
     );
   }
@@ -975,7 +1421,7 @@ function RankList({
             </div>
           </div>
           <div className="rank-value">
-            <strong>{valueMetric === "searchIndex" ? formatNumber(Math.round(Number(item.searchIndex || 0))) : formatPct(item.growth)}</strong>
+            <strong>{valueFormatter ? valueFormatter(item) : valueMetric === "searchIndex" ? formatNumber(Math.round(Number(item.searchIndex || 0))) : formatPct(item.growth)}</strong>
             <span>{valueLabel}</span>
           </div>
         </div>
@@ -1188,20 +1634,6 @@ function MatrixLegend() {
           <span>{STATUS_LABELS[key]}</span>
         </div>
       ))}
-    </div>
-  );
-}
-
-function MatrixMotionGuide() {
-  return (
-    <div className="matrix-motion-guide" aria-label="수요 공급 매트릭스 이동 표현 설명">
-      <span className="matrix-motion-text matrix-motion-trail-text">
-        옅은 작은 잔상 → 진한 큰 잔상 = 전주에서 현재로 이동한 흔적
-      </span>
-      <span className="matrix-motion-divider">·</span>
-      <span className="matrix-motion-text matrix-motion-current-text">
-        진한 버블 = 현재 위치
-      </span>
     </div>
   );
 }
@@ -1446,6 +1878,14 @@ function getTrendTickIndexes(length: number) {
   return Array.from(new Set(indexes));
 }
 
+function getTrendPointIndexes(length: number) {
+  if (length <= 32) return Array.from({ length }, (_, index) => index);
+
+  const maxPoints = 18;
+  const indexes = Array.from({ length: maxPoints }, (_, index) => Math.round((index / Math.max(1, maxPoints - 1)) * (length - 1)));
+  return Array.from(new Set(indexes));
+}
+
 function SearchTrendPlot({
   trend,
   isLoading,
@@ -1480,8 +1920,8 @@ function SearchTrendPlot({
   return (
     <div className="plot-shell chart-shell trend-plot-shell">
       <div className="trend-legend" aria-label="성분 검색 관심도 추이 범례">
-        {trend.series.map((series) => {
-          const color = series.color || DATALAB_TREND_COLORS[series.ingredient] || "#6B7280";
+        {trend.series.map((series, index) => {
+          const color = series.color || getTrendColor(series.ingredient, index);
           return (
             <span className="trend-legend-item" key={series.ingredient}>
               <i style={{ background: color }} />
@@ -1520,15 +1960,16 @@ function SearchTrendPlot({
         <text x={width / 2} y={height - 10} className="chart-axis-title" textAnchor="middle">기간</text>
         <text x="16" y={(height - padding.bottom + padding.top) / 2} className="chart-axis-title" textAnchor="middle" transform={`rotate(-90 16 ${(height - padding.bottom + padding.top) / 2})`}>검색 관심도</text>
 
-        {trend.series.map((series) => {
-          const color = series.color || DATALAB_TREND_COLORS[series.ingredient] || "#6B7280";
+        {trend.series.map((series, seriesIndex) => {
+          const color = series.color || getTrendColor(series.ingredient, seriesIndex);
           const points = series.values.map((value, index) => `${xFor(index)},${yFor(value)}`).join(" ");
+          const pointIndexes = new Set(getTrendPointIndexes(series.values.length));
           return (
             <g key={series.ingredient}>
               <polyline points={points} fill="none" stroke={color} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
-              {series.values.map((value, index) => (
-                <circle key={`${series.ingredient}-${index}`} cx={xFor(index)} cy={yFor(value)} r="4" fill={color} />
-              ))}
+              {series.values.map((value, index) => pointIndexes.has(index) ? (
+                <circle key={`${series.ingredient}-${index}`} cx={xFor(index)} cy={yFor(value)} r="3.5" fill={color} />
+              ) : null)}
             </g>
           );
         })}
@@ -1548,7 +1989,7 @@ function MarketProductPlot({ products }: { products: MarketProduct[] }) {
 
   return (
     <div className="plot-shell compact bar-chart">
-      {rows.map((item) => {
+      {rows.map((item, index) => {
         const hasPreviousBaseline = !String(item.source || "").includes("no_previous_snapshot");
         const growth = hasPreviousBaseline
           ? getGrowthDisplay(getProductGrowth(item))
@@ -1564,7 +2005,7 @@ function MarketProductPlot({ products }: { products: MarketProduct[] }) {
                 className="bar-fill"
                 style={{
                   width: `${Math.max(8, (item.product_count / maxCount) * 100)}%`,
-                  background: DATALAB_TREND_COLORS[item.ingredient_label] || "#2CA6A4",
+                  background: getTrendColor(item.ingredient_label, index),
                 }}
               />
             </div>
@@ -1627,43 +2068,6 @@ function ConcernHeatmap({
         <span>높음</span>
       </div>
     </>
-  );
-}
-
-function SentimentDonut({ page }: { page: ReviewIngredient }) {
-  const { positive, neutral, negative } = page.sentiment;
-  const positiveEnd = positive;
-  const neutralEnd = positive + neutral;
-  const background = `conic-gradient(#2BB7A9 0 ${positiveEnd}%, #94A3B8 ${positiveEnd}% ${neutralEnd}%, #F28B82 ${neutralEnd}% 100%)`;
-
-  return (
-    <div className="plot-shell compact sentiment-plot">
-      <div className="donut-chart" style={{ background }}>
-        <div>
-          <span>긍정</span>
-          <strong>{positive}%</strong>
-        </div>
-      </div>
-      <div className="sentiment-legend">
-        <span><i style={{ background: "#2BB7A9" }} />긍정 {positive}%</span>
-        <span><i style={{ background: "#94A3B8" }} />중립 {neutral}%</span>
-        <span><i style={{ background: "#F28B82" }} />부정 {negative}%</span>
-      </div>
-    </div>
-  );
-}
-
-function KeywordPanel({ title, keywords, tone }: { title: string; keywords: Keyword[]; tone: "positive" | "negative" }) {
-  return (
-    <div className={`keyword-panel ${tone}`}>
-      <div className="keyword-panel-title">{title}</div>
-      {keywords.map((keyword) => (
-        <div className="keyword-row" key={keyword.label}>
-          <span>{keyword.label}</span>
-          <strong>{Number(keyword.score || 0).toFixed(1)}%</strong>
-        </div>
-      ))}
-    </div>
   );
 }
 
@@ -1732,7 +2136,19 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState<TabId>("A");
   const [activePriceType, setActivePriceType] = useState<PriceType>("sale");
   const [activeSearchPeriodKey, setActiveSearchPeriodKey] = useState("snapshot");
-  const [activeReviewIngredientKey, setActiveReviewIngredientKey] = useState(dashboardData.page3.selectedIngredientKey);
+  const [activeIngredientRankingSource, setActiveIngredientRankingSource] = useState<IngredientRankingSource>("naver");
+  const [activeTrendIngredientSet, setActiveTrendIngredientSet] = useState<TrendIngredientSet>("main");
+  const [oliveYoungIngredientPopularity, setOliveYoungIngredientPopularity] = useState<RankItem[]>([]);
+  const [oliveYoungRankingState, setOliveYoungRankingState] = useState<{ status: ApiState; error: string }>({
+    status: "idle",
+    error: "",
+  });
+  const [selectedReviewIngredient, setSelectedReviewIngredient] = useState("나이아신아마이드");
+  const [reviewAnalysis, setReviewAnalysis] = useState<ReviewAnalysisResult | null>(null);
+  const [reviewAnalysisState, setReviewAnalysisState] = useState<{ status: ApiState; error: string }>({
+    status: "idle",
+    error: "",
+  });
   const [activeAlertId, setActiveAlertId] = useState(dashboardData.page4.alerts[0]?.id || "");
   const [agentPrompt, setAgentPrompt] = useState("");
   const didRequestInitialData = useRef(false);
@@ -1759,10 +2175,40 @@ export default function Dashboard() {
     }
   }
 
-  async function loadIngredientTrend(periodKey: string) {
+  async function loadOliveYoungIngredientPopularity() {
+    setOliveYoungRankingState({ status: "loading", error: "" });
+
+    try {
+      const items = await fetchOliveYoungIngredientPopularityFromSupabase();
+      setOliveYoungIngredientPopularity(items);
+      setOliveYoungRankingState({ status: "ready", error: "" });
+    } catch (error) {
+      console.error("Supabase 올리브영 성분 랭킹 조회 실패", error);
+      setOliveYoungIngredientPopularity([]);
+      setOliveYoungRankingState({
+        status: "error",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  async function loadIngredientTrend(
+    periodKey: string,
+    ingredientSet: TrendIngredientSet = activeTrendIngredientSet,
+    ingredientLabels = getTrendIngredientLabels(ingredientSet, data.page1.demandSupplyMatrix),
+  ) {
     setLoadState((current) => ({ ...current, searchTrend: "loading", searchTrendError: "" }));
     try {
-      const payload = await fetchLocalJson<DatalabWeeklyInterestResponse>(`/api/dashboard/datalab-weekly-interest?scope=page2&period=${encodeURIComponent(periodKey)}`);
+      const params = new URLSearchParams({
+        scope: "page2",
+        period: periodKey,
+        ingredientSet,
+      });
+      if (ingredientSet === "opportunity" && ingredientLabels.length) {
+        params.set("ingredients", ingredientLabels.join(","));
+      }
+
+      const payload = await fetchLocalJson<DatalabWeeklyInterestResponse>(`/api/dashboard/datalab-weekly-interest?${params.toString()}`);
       const trendPayload = payload.page2 || {};
 
       if (trendPayload.searchTrend || trendPayload.concernTable) {
@@ -1779,6 +2225,13 @@ export default function Dashboard() {
 
       if (hasTrend) {
         const labels = trendPayload.searchTrend?.series?.map((series) => series.ingredient) || [];
+        setData((current) => ({
+          ...current,
+          page2: {
+            ...current.page2,
+            marketProducts: [],
+          },
+        }));
         void fetchMarketProductsFromSupabase(labels).then((marketProducts) => {
           setData((current) => ({
             ...current,
@@ -1805,7 +2258,7 @@ export default function Dashboard() {
     try {
       const labels = data.page2.searchTrend.series.length
         ? data.page2.searchTrend.series.map((series) => series.ingredient)
-        : MAIN_INGREDIENTS.map((item) => item.label);
+        : getTrendIngredientLabels(activeTrendIngredientSet, data.page1.demandSupplyMatrix);
       const marketProducts = await fetchMarketProductsFromSupabase(labels);
       setData((current) => ({
         ...current,
@@ -1844,6 +2297,11 @@ export default function Dashboard() {
       demandSupplyMatrix: result.isUnavailable ? "error" : "ready",
       demandSupplyMatrixError: result.error,
     }));
+
+    if (activeTrendIngredientSet === "opportunity" && result.items.length) {
+      const labels = getTrendIngredientLabels("opportunity", result.items);
+      void loadIngredientTrend(activeSearchPeriodKey, "opportunity", labels);
+    }
   }
 
   async function loadPage1Insights(payload: ReturnType<typeof buildPage1InsightPayload>) {
@@ -1861,16 +2319,35 @@ export default function Dashboard() {
         throw new Error(typeof result.error === "string" ? result.error : INSIGHT_GENERATION_ERROR_MESSAGE);
       }
 
-      setData((current) => mergePage1Insights(current, result.insights.map((item: unknown) => String(item)).filter(Boolean)));
+      const generatedInsights = result.insights.map((item: unknown) => String(item)).filter(Boolean);
+      const decisionInsights = ensureDashboardInsights(generatedInsights, buildPage1DecisionInsights(payload));
+      setData((current) => mergePage1Insights(current, decisionInsights));
       setLoadState((current) => ({ ...current, page1Insights: "ready", page1InsightsError: "" }));
     } catch (error) {
       console.error("OpenAI Page 1 인사이트 요약 생성 실패", error);
-      setData((current) => mergePage1Insights(current, []));
+      setData((current) => mergePage1Insights(current, buildPage1DecisionInsights(payload)));
       setLoadState((current) => ({
         ...current,
-        page1Insights: "error",
-        page1InsightsError: INSIGHT_GENERATION_ERROR_MESSAGE,
+        page1Insights: "ready",
+        page1InsightsError: "",
       }));
+    }
+  }
+
+  async function loadReviewAnalysis(ingredient: string) {
+    setReviewAnalysisState({ status: "loading", error: "" });
+
+    try {
+      const payload = await fetchLocalJson<ReviewAnalysisResult>(`/api/review-analysis?ingredient=${encodeURIComponent(ingredient)}`);
+      setReviewAnalysis(payload);
+      setReviewAnalysisState({ status: "ready", error: "" });
+    } catch (error) {
+      console.error("소비자 리뷰 분석 조회 실패", error);
+      setReviewAnalysis(null);
+      setReviewAnalysisState({
+        status: "error",
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -1883,10 +2360,15 @@ export default function Dashboard() {
     if (didRequestInitialData.current) return;
     didRequestInitialData.current = true;
     void refreshDatalabData("snapshot");
+    void loadOliveYoungIngredientPopularity();
     void loadPriceDistribution();
     void loadMarketProducts();
     void loadDemandSupplyMatrix();
   }, []);
+
+  useEffect(() => {
+    void loadReviewAnalysis(selectedReviewIngredient);
+  }, [selectedReviewIngredient]);
 
   useEffect(() => {
     const stillLoading = loadState.dashboardSignals === "loading" ||
@@ -1914,10 +2396,36 @@ export default function Dashboard() {
     loadState.demandSupplyMatrixError,
   ]);
 
+  const isDashboardLoading = loadState.dashboardSignals === "loading";
+  const isTrendLoading = loadState.searchTrend === "loading";
+  const isPriceLoading = loadState.priceDistribution === "loading";
+  const isDemandSupplyLoading = loadState.demandSupplyMatrix === "loading";
+  const isPage1InsightsLoading = loadState.page1Insights === "loading";
   const marketProducts = useMemo(
     () => data.page2.marketProducts.slice().sort((a, b) => b.product_count - a.product_count),
     [data.page2.marketProducts],
   );
+  const page2DecisionInsights = useMemo(
+    () => buildPage2DecisionInsights(data.page2, marketProducts),
+    [data.page2, marketProducts],
+  );
+  const opportunityIngredientLabels = useMemo(
+    () => getOpportunityIngredientLabels(data.page1.demandSupplyMatrix),
+    [data.page1.demandSupplyMatrix],
+  );
+  const opportunityLabelKey = opportunityIngredientLabels.join("|");
+  const activeTrendIngredientLabels = activeTrendIngredientSet === "opportunity" && opportunityIngredientLabels.length
+    ? opportunityIngredientLabels
+    : MAIN_INGREDIENTS.map((item) => item.label);
+  const ingredientPopularityItems = activeIngredientRankingSource === "naver"
+    ? data.page1.ingredientPopularity
+    : oliveYoungIngredientPopularity;
+  const isIngredientPopularityLoading = activeIngredientRankingSource === "naver"
+    ? isDashboardLoading
+    : oliveYoungRankingState.status === "loading";
+  const ingredientPopularityError = activeIngredientRankingSource === "naver"
+    ? loadState.dashboardSignalsError
+    : oliveYoungRankingState.error;
   const activePeriod = SEARCH_PERIOD_OPTIONS.find((option) => option.key === activeSearchPeriodKey) || SEARCH_PERIOD_OPTIONS[0];
   const leadSeries = data.page2.searchTrend.series[0];
   const leadIngredient = leadSeries?.ingredient || data.page2.selectedIngredient || "-";
@@ -1925,13 +2433,7 @@ export default function Dashboard() {
   const leadGrowth = calculateSeriesGrowth(leadSeries, Number(selectedGrowthRate || 0));
   const leadProduct = marketProducts.find((item) => item.ingredient_label === leadIngredient);
   const marketStatus = leadProduct ? getMarketReflectionStatus(leadGrowth, leadProduct.product_count) : "공급 데이터 연결 중";
-  const reviewPage = data.page3.byIngredient[activeReviewIngredientKey] || data.page3;
   const activeAlert = data.page4.alerts.find((alert) => alert.id === activeAlertId) || data.page4.alerts[0];
-  const isDashboardLoading = loadState.dashboardSignals === "loading";
-  const isTrendLoading = loadState.searchTrend === "loading";
-  const isPriceLoading = loadState.priceDistribution === "loading";
-  const isDemandSupplyLoading = loadState.demandSupplyMatrix === "loading";
-  const isPage1InsightsLoading = loadState.page1Insights === "loading";
   const statusCard = (
     <DataStatusCard
       meta={data.meta}
@@ -1943,22 +2445,26 @@ export default function Dashboard() {
     />
   );
 
+  useEffect(() => {
+    if (activeTrendIngredientSet !== "opportunity" || !opportunityIngredientLabels.length) return;
+
+    const currentTrendLabelKey = data.page2.searchTrend.series.map((series) => series.ingredient).join("|");
+    if (currentTrendLabelKey === opportunityLabelKey) return;
+
+    void loadIngredientTrend(activeSearchPeriodKey, "opportunity", opportunityIngredientLabels);
+  }, [activeTrendIngredientSet, opportunityLabelKey]);
+
   if (!activeAlert) return null;
 
-  const positiveKeywords = reviewPage.positiveKeywords.length
-    ? reviewPage.positiveKeywords
-    : reviewPage.keywords.filter((keyword) => keyword.tone === "positive");
-  const negativeKeywords = reviewPage.negativeKeywords.length
-    ? reviewPage.negativeKeywords
-    : reviewPage.keywords.filter((keyword) => keyword.tone === "negative");
+  const isReviewAnalysisLoading = reviewAnalysisState.status === "loading";
 
   return (
     <div className="dash">
       <nav className="sidebar">
         <div className="sidebar-logo">
-          <div className="logo-emoji">🧴</div>
-          <div className="logo-title">BeautyMD Insight</div>
-          <div className="logo-sub">성분 인텔리전스 v0.3</div>
+          <img className="sidebar-brand-logo" src="/beauty-guard-logo-transparent.png" alt="Beauty Guard" />
+          <div className="logo-title">Beauty Guard</div>
+          <div className="logo-sub">Ingredient Trend Dashboard</div>
         </div>
         <div className="nav-section">
           <div className="nav-label">대시보드</div>
@@ -1975,7 +2481,7 @@ export default function Dashboard() {
             </button>
           ))}
         </div>
-        <div className="sidebar-footer">떡잎마을 방범대 · {data.meta.dataRange}</div>
+        <div className="sidebar-footer">떡잎마을 방범대</div>
       </nav>
 
       <main className="main">
@@ -1985,7 +2491,6 @@ export default function Dashboard() {
               badge="Page 1"
               title="1. 성분 시장 스냅샷"
               description="수요·공급·가격·검색 데이터를 기반으로 지금 주목해야 할 성분 시장 구조를 한눈에 파악합니다."
-              actions={<span className="tag tag-blue">앰플 카테고리</span>}
               statusCard={statusCard}
             />
             <SummaryStrip summary={data.page1Summary} />
@@ -2002,21 +2507,47 @@ export default function Dashboard() {
                   valueMetric="growth"
                   isLoading={isDashboardLoading}
                   error={loadState.dashboardSignalsError}
+                  loadingMessage="Naver DataLab API에서 데이터를 불러오는 중입니다."
                 />
               </section>
 
               <section className="card rank-card">
                 <div className="card-header">
                   <span>성분 인기 순위 TOP 5</span>
-                  <span className="card-meta">네이버 검색 관심도 기준</span>
+                  <div className="rank-source-toggle" aria-label="성분 인기 순위 데이터 기준 선택">
+                    {INGREDIENT_RANKING_SOURCE_OPTIONS.map((option) => (
+                      <button
+                        className={`period-button ${activeIngredientRankingSource === option.key ? "active" : ""}`}
+                        key={option.key}
+                        type="button"
+                        onClick={() => {
+                          setActiveIngredientRankingSource(option.key);
+                          if (option.key === "oliveyoung" && oliveYoungRankingState.status === "idle") {
+                            void loadOliveYoungIngredientPopularity();
+                          }
+                        }}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
                 <RankList
-                  items={data.page1.ingredientPopularity}
-                  valueLabel="전주 대비 증감률"
+                  items={ingredientPopularityItems}
+                  valueLabel={activeIngredientRankingSource === "naver" ? "전주 대비 증감률" : "평균 상품 순위"}
                   barMetric="searchIndex"
-                  valueMetric="growth"
-                  isLoading={isDashboardLoading}
-                  error={loadState.dashboardSignalsError}
+                  valueMetric={activeIngredientRankingSource === "naver" ? "growth" : "searchIndex"}
+                  valueFormatter={activeIngredientRankingSource === "oliveyoung"
+                    ? (item) => item.averageRank ? `#${Number(item.averageRank).toFixed(1)}` : "-"
+                    : undefined}
+                  isLoading={isIngredientPopularityLoading}
+                  error={ingredientPopularityError}
+                  emptyMessage={activeIngredientRankingSource === "naver"
+                    ? DATALAB_WEEKLY_API_REQUIRED_MESSAGE
+                    : "표시할 올리브영 성분 랭킹 데이터가 없습니다."}
+                  loadingMessage={activeIngredientRankingSource === "naver"
+                    ? "Naver DataLab API에서 데이터를 불러오는 중입니다."
+                    : "Supabase에서 올리브영 성분 랭킹을 불러오는 중입니다."}
                 />
               </section>
 
@@ -2057,8 +2588,6 @@ export default function Dashboard() {
                   <div className="empty-state">{loadState.demandSupplyMatrixError}</div>
                 ) : null}
                 <MatrixLegend />
-                <MatrixMotionGuide />
-                <div className="matrix-helper-note">버블 크기 = 성분별 공급 제품 수를 기본으로, 현재 수요 지수를 일부 반영한 상대적 규모입니다.</div>
                 <DemandSupplyPlot
                   items={data.page1.demandSupplyMatrix}
                   isLoading={isDemandSupplyLoading}
@@ -2091,7 +2620,7 @@ export default function Dashboard() {
                   </div>
                   <div className="control-chip muted">
                     <span>성분 선택</span>
-                    <strong>{MAIN_INGREDIENTS.length}개 선택됨</strong>
+                    <strong>{activeTrendIngredientSet === "opportunity" ? `기회 성분 ${activeTrendIngredientLabels.length}개` : `주요 성분 ${MAIN_INGREDIENTS.length}개`}</strong>
                   </div>
                 </>
               )}
@@ -2103,29 +2632,49 @@ export default function Dashboard() {
                   <span>성분 검색 관심도 추이</span>
                   <span className="card-meta">Naver DataLab ratio</span>
                 </div>
-                <div className="period-control-row" aria-label="검색 관심도 기간 선택">
-                  {SEARCH_PERIOD_OPTIONS.map((option) => (
-                    <button
-                      className={`period-button ${option.key === activeSearchPeriodKey ? "active" : ""}`}
-                      key={option.key}
-                      type="button"
-                      onClick={() => {
-                        setActiveSearchPeriodKey(option.key);
-                        void loadIngredientTrend(option.key);
-                      }}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
+                <div className="trend-control-stack">
+                  <div className="period-control-row" aria-label="검색 관심도 기간 선택">
+                    {SEARCH_PERIOD_OPTIONS.map((option) => (
+                      <button
+                        className={`period-button ${option.key === activeSearchPeriodKey ? "active" : ""}`}
+                        key={option.key}
+                        type="button"
+                        onClick={() => {
+                          const labels = getTrendIngredientLabels(activeTrendIngredientSet, data.page1.demandSupplyMatrix);
+                          setActiveSearchPeriodKey(option.key);
+                          void loadIngredientTrend(option.key, activeTrendIngredientSet, labels);
+                        }}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="period-control-row trend-set-control" aria-label="검색 관심도 성분 그룹 선택">
+                    {TREND_INGREDIENT_SET_OPTIONS.map((option) => (
+                      <button
+                        className={`period-button ${option.key === activeTrendIngredientSet ? "active" : ""}`}
+                        key={option.key}
+                        type="button"
+                        onClick={() => {
+                          const labels = getTrendIngredientLabels(option.key, data.page1.demandSupplyMatrix);
+                          setActiveTrendIngredientSet(option.key);
+                          void loadIngredientTrend(activeSearchPeriodKey, option.key, labels);
+                        }}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
                 <div className="trend-badges">
                   {[
+                    activeTrendIngredientSet === "opportunity" ? "기회 성분 보기" : "주요 성분 보기",
                     `${leadIngredient} 시작일 대비 ${formatPct(leadGrowth)}`,
                     `현재 보기 ${activePeriod.label}`,
                     leadProduct ? `제품 수 ${formatNumber(leadProduct.product_count)}개` : "제품 수 연결 중",
                     marketStatus,
                   ].map((label, index) => (
-                    <span className={`trend-badge ${index === 0 ? "primary" : ""}`} key={label}>{label}</span>
+                    <span className={`trend-badge ${index <= 1 ? "primary" : ""}`} key={label}>{label}</span>
                   ))}
                 </div>
                 <SearchTrendPlot trend={data.page2.searchTrend} isLoading={isTrendLoading} error={loadState.searchTrendError} />
@@ -2163,7 +2712,7 @@ export default function Dashboard() {
                 </div>
                 <p className="card-helper">검색 관심도, 제품 수, 피부 고민 집중도를 함께 읽어 핵심 해석을 요약합니다.</p>
                 <InsightList
-                  items={data.page2.insights}
+                  items={page2DecisionInsights}
                   fallback={loadState.dashboardSignalsError ? `FastAPI 오류: ${loadState.dashboardSignalsError}` : "Naver DataLab API에서 검색 트렌드 인사이트를 불러오는 중입니다."}
                 />
               </section>
@@ -2180,26 +2729,11 @@ export default function Dashboard() {
                 <>
                   <div className="control-chip">
                     <span>성분 선택</span>
-                    <select
-                      className="review-ingredient-select"
-                      value={activeReviewIngredientKey}
-                      onChange={(event) => setActiveReviewIngredientKey(event.target.value)}
-                      aria-label="리뷰 분석 성분 선택"
-                    >
-                      {data.page3.ingredientOptions.map((option) => (
-                        <option value={option.key} key={option.key}>{option.label}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="control-chip feature-control">
-                    <span>주요 기능</span>
-                    <div className="chip-group">
-                      {reviewPage.functionChips.map((chip) => <span className="feature-chip" key={chip}>{chip}</span>)}
-                    </div>
+                    <IngredientSelect value={selectedReviewIngredient} onChange={setSelectedReviewIngredient} />
                   </div>
                   <div className="control-chip muted">
-                    <span>기간</span>
-                    <strong>2025.04.30 ~ 2025.05.05</strong>
+                    <span>분석 리뷰</span>
+                    <strong>{reviewAnalysis ? `${formatNumber(reviewAnalysis.totalReviews)}개` : isReviewAnalysisLoading ? "분석 중" : "-"}</strong>
                   </div>
                 </>
               )}
@@ -2208,72 +2742,49 @@ export default function Dashboard() {
             <div className="dashboard-grid review-grid">
               <section className="card sentiment-card">
                 <div className="card-header">리뷰 감정 분석</div>
-                <SentimentDonut page={reviewPage} />
+                {reviewAnalysis ? (
+                  <SentimentDonutChart sentiment={reviewAnalysis.sentiment} />
+                ) : (
+                  <div className="empty-state api-state">
+                    {reviewAnalysisState.error || (isReviewAnalysisLoading ? "리뷰 감정 분석을 실행 중입니다." : "표시할 리뷰 분석 데이터가 없습니다.")}
+                  </div>
+                )}
               </section>
 
               <section className="card keyword-card">
-                <div className="card-header">핵심 키워드</div>
-                <div className="keyword-cloud">
-                  <KeywordPanel title="긍정 키워드 TOP 5" keywords={positiveKeywords} tone="positive" />
-                  <KeywordPanel title="부정 키워드 TOP 5" keywords={negativeKeywords} tone="negative" />
-                </div>
+                <div className="card-header">주요 키워드 분석</div>
+                {reviewAnalysis ? (
+                  <KeywordCards positive={reviewAnalysis.keywords.positive} negative={reviewAnalysis.keywords.negative} />
+                ) : (
+                  <div className="empty-state api-state">{isReviewAnalysisLoading ? "키워드를 추출 중입니다." : "표시할 키워드가 없습니다."}</div>
+                )}
               </section>
 
               <section className="card product-card">
                 <div className="card-header">리뷰 반응 상위 제품 TOP 3</div>
-                <div className="product-list">
-                  {reviewPage.brandProducts.map((item) => (
-                    <div className="product-row" key={`${item.brand}-${item.product}`}>
-                      <div className="product-rank">{formatNumber(item.rank)}</div>
-                      <div>
-                        <span>{item.brand}</span>
-                        <strong>{item.product}</strong>
-                        <p>{item.issue}</p>
-                      </div>
-                      <div className="product-stat">
-                        <span>리뷰 수</span>
-                        <strong>{formatNumber(item.reviewCount)}</strong>
-                      </div>
-                      <div className="product-stat">
-                        <span>평점</span>
-                        <strong>{Number(item.rating || 0).toFixed(1)}</strong>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                {reviewAnalysis ? (
+                  <TopReviewProducts products={reviewAnalysis.topProducts} />
+                ) : (
+                  <div className="empty-state api-state">{isReviewAnalysisLoading ? "제품 반응을 계산 중입니다." : "표시할 제품 데이터가 없습니다."}</div>
+                )}
               </section>
 
               <section className="card skin-table-card">
                 <div className="card-header">피부 타입별 감정 비율 & 주요 이슈 요약</div>
-                <div className="table-wrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>피부 타입</th>
-                        <th>긍정</th>
-                        <th>중립</th>
-                        <th>부정</th>
-                        <th>주요 이슈</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {reviewPage.skinTypeSentiment.map((row) => (
-                        <tr key={row.type}>
-                          <td>{row.type}</td>
-                          <td>{row.positive}%</td>
-                          <td>{row.neutral}%</td>
-                          <td>{row.negative}%</td>
-                          <td>{row.issue}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                {reviewAnalysis ? (
+                  <SkinTypeSentimentTable rows={reviewAnalysis.skinTypeAnalysis} />
+                ) : (
+                  <div className="empty-state api-state">{isReviewAnalysisLoading ? "피부 타입별 감정을 계산 중입니다." : "표시할 피부 타입 데이터가 없습니다."}</div>
+                )}
               </section>
 
               <section className="card review-insight-card">
                 <div className="card-header">기회 인사이트</div>
-                <InsightList items={reviewPage.opportunities} />
+                {reviewAnalysis ? (
+                  <OpportunityInsights insights={reviewAnalysis.insights} />
+                ) : (
+                  <div className="empty-state api-state">{isReviewAnalysisLoading ? "인사이트를 생성 중입니다." : "표시할 인사이트가 없습니다."}</div>
+                )}
               </section>
             </div>
           </article>
@@ -2290,8 +2801,8 @@ export default function Dashboard() {
 
               <div className="summary-strip alert-summary">
                 {[
-                  { label: "급등 성분", value: `${data.page4.summary.spikeCount || 0}건`, tone: "up" },
-                  { label: "공급 과열", value: `${data.page4.summary.oversupplyCount || 0}건`, tone: "warn" },
+                  { label: "신제품 기획 후보", value: `${data.page1Summary.risingIngredientCount || 0}건`, tone: "up" },
+                  { label: "재고 리스크 성분", value: `${data.page1Summary.supplyShortageIngredientCount || 0}건`, tone: "warn" },
                   { label: "부정 리뷰 증가", value: `${data.page4.summary.negativeReviewCount || 0}건`, tone: "down" },
                 ].map((item) => (
                   <div className={`summary-chip ${item.tone}`} key={item.label}>

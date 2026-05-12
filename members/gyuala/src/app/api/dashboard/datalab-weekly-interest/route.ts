@@ -35,6 +35,8 @@ type WeeklyInterestRow = {
   searchIndex: number;
 };
 
+type DatalabTimeUnit = "date" | "week" | "month";
+
 const NAVER_DATALAB_URL = "https://openapi.naver.com/v1/datalab/search";
 const KEYWORD_GROUPS_PER_REQUEST = 4;
 const KEYWORDS_PER_GROUP = Number(process.env.NAVER_DATALAB_KEYWORDS_PER_GROUP || 8);
@@ -56,10 +58,13 @@ export async function GET(request: Request) {
 
     if (scope === "page2") {
       const periodKey = url.searchParams.get("period") || "snapshot";
-      const { startDate, endDate, label } = getPeriodRange(periodKey);
+      const ingredientSet = url.searchParams.get("ingredientSet") || "main";
+      const requestedIngredients = splitIngredientLabels(url.searchParams.get("ingredients") || "");
+      const trendGroups = resolvePage2TrendGroups(ingredientSet, requestedIngredients);
+      const { startDate, endDate, label, timeUnit } = getPeriodRange(periodKey);
       const [searchTrend, concernPayload] = await Promise.all([
-        fetchTrendSeries(PAGE2_MAIN_INGREDIENT_GROUPS, startDate, endDate, clientId, clientSecret),
-        fetchConcernHeatmap(startDate, endDate, clientId, clientSecret),
+        fetchTrendSeries(trendGroups, startDate, endDate, clientId, clientSecret, timeUnit),
+        fetchConcernHeatmap(startDate, endDate, clientId, clientSecret, timeUnit),
       ]);
 
       const leadSeries = searchTrend.series[0];
@@ -74,15 +79,17 @@ export async function GET(request: Request) {
           dataRange: `${startDate} ~ ${endDate}`,
           lastUpdated: endDate,
           comparisonLabel: "기간 내 검색 관심도",
+          timeUnit,
         },
         page2: {
           periodLabel: label,
-          selectedIngredient: leadSeries?.ingredient || PAGE2_MAIN_INGREDIENT_GROUPS[0]?.label || "",
+          selectedIngredient: leadSeries?.ingredient || trendGroups[0]?.label || "",
           selectedSummary: {
             growthRate: round(growthRate, 1),
             startIndex: round(startValue, 1),
             endIndex: round(endValue, 1),
             periodKey,
+            ingredientSet,
           },
           searchTrend,
           concernMetrics: concernPayload.concernMetrics,
@@ -110,6 +117,7 @@ export async function GET(request: Request) {
           .slice()
           .sort((a, b) => b.growth - a.growth)
           .slice(0, 5),
+        functionDemand: functionRows,
         ingredientPopularity: ingredientRows
           .slice()
           .sort((a, b) => b.currentWeekIndex - a.currentWeekIndex)
@@ -132,6 +140,7 @@ async function fetchWeeklyInterestRows(
   endDate: string,
   clientId: string,
   clientSecret: string,
+  timeUnit: DatalabTimeUnit = "date",
 ) {
   const rows: WeeklyInterestRow[] = [];
 
@@ -149,12 +158,13 @@ async function fetchTrendSeries(
   endDate: string,
   clientId: string,
   clientSecret: string,
+  timeUnit: DatalabTimeUnit = "date",
 ) {
   const rawByLabel = new Map<string, Map<string, number>>();
   const orderedDates = new Set<string>();
 
   for (const chunk of chunkGroups(groups, KEYWORD_GROUPS_PER_REQUEST)) {
-    const response = await requestNaverDatalab([...chunk, ANCHOR_GROUP], startDate, endDate, clientId, clientSecret);
+    const response = await requestNaverDatalab([...chunk, ANCHOR_GROUP], startDate, endDate, clientId, clientSecret, undefined, timeUnit);
     const normalized = normalizedSeriesFromDatalabResults(response, chunk);
 
     normalized.forEach((points, label) => {
@@ -190,6 +200,7 @@ async function fetchConcernHeatmap(
   endDate: string,
   clientId: string,
   clientSecret: string,
+  timeUnit: DatalabTimeUnit = "date",
 ) {
   const rawRows = AGE_GROUPS.map((ageGroup) => ({
     age: ageGroup.label,
@@ -201,7 +212,7 @@ async function fetchConcernHeatmap(
     if (!ageGroup) continue;
 
     for (const chunk of chunkGroups(CONCERN_SIGNAL_GROUPS, KEYWORD_GROUPS_PER_REQUEST)) {
-      const response = await requestNaverDatalab([...chunk, ANCHOR_GROUP], startDate, endDate, clientId, clientSecret, ageGroup.ages);
+      const response = await requestNaverDatalab([...chunk, ANCHOR_GROUP], startDate, endDate, clientId, clientSecret, ageGroup.ages, timeUnit);
       const normalized = normalizedSeriesFromDatalabResults(response, chunk);
       normalized.forEach((points, label) => {
         row.values.set(label, average(Array.from(points.values())));
@@ -233,6 +244,7 @@ async function requestNaverDatalab(
   clientId: string,
   clientSecret: string,
   ages?: string[],
+  timeUnit: DatalabTimeUnit = "date",
 ) {
   const response = await fetch(NAVER_DATALAB_URL, {
     method: "POST",
@@ -244,7 +256,7 @@ async function requestNaverDatalab(
     body: JSON.stringify({
       startDate,
       endDate,
-      timeUnit: "date",
+      timeUnit,
       ...(ages?.length ? { ages } : {}),
       keywordGroups: groups.map((group) => ({
         groupName: group.label,
@@ -358,12 +370,12 @@ function getPeriodRange(periodKey: string) {
   const end = new Date();
   end.setDate(end.getDate() - 1);
 
-  const dayMap: Record<string, { days: number; label: string }> = {
-    snapshot: { days: 7, label: "스냅샷" },
-    "1m": { days: 30, label: "1개월" },
-    "6m": { days: 180, label: "6개월" },
-    "1y": { days: 365, label: "1년" },
-    "3y": { days: 1095, label: "3년" },
+  const dayMap: Record<string, { days: number; label: string; timeUnit: DatalabTimeUnit }> = {
+    snapshot: { days: 7, label: "스냅샷", timeUnit: "date" },
+    "1m": { days: 30, label: "1개월", timeUnit: "date" },
+    "6m": { days: 180, label: "6개월", timeUnit: "week" },
+    "1y": { days: 365, label: "1년", timeUnit: "week" },
+    "3y": { days: 1095, label: "3년", timeUnit: "month" },
   };
   const option = dayMap[periodKey] || dayMap.snapshot;
   const start = new Date(end);
@@ -373,7 +385,61 @@ function getPeriodRange(periodKey: string) {
     startDate: toDateString(start),
     endDate: toDateString(end),
     label: option.label,
+    timeUnit: option.timeUnit,
   };
+}
+
+function resolvePage2TrendGroups(ingredientSet: string, requestedLabels: string[]) {
+  if (ingredientSet !== "opportunity") return PAGE2_MAIN_INGREDIENT_GROUPS;
+
+  const allGroups = [...PAGE2_MAIN_INGREDIENT_GROUPS, ...buildIngredientKeywordGroups()];
+  const seen = new Set<string>();
+  const groups = requestedLabels.flatMap((label) => {
+    const normalized = normalizeGroupLabel(label);
+    if (!normalized || seen.has(normalized)) return [];
+
+    const matchedGroup = allGroups.find((group) => {
+      const groupLabel = normalizeGroupLabel(group.label);
+      const groupKey = normalizeGroupLabel(group.key);
+      return groupLabel === normalized ||
+        groupKey === normalized ||
+        groupLabel.includes(normalized) ||
+        normalized.includes(groupLabel);
+    });
+
+    seen.add(normalized);
+
+    return [{
+      key: matchedGroup?.key || normalized,
+      label,
+      keywords: matchedGroup?.keywords?.length ? matchedGroup.keywords : buildFallbackIngredientKeywords(label),
+    }];
+  });
+
+  return groups.length ? groups.slice(0, 5) : PAGE2_MAIN_INGREDIENT_GROUPS;
+}
+
+function splitIngredientLabels(value: string) {
+  return value
+    .split(",")
+    .map((label) => label.trim())
+    .filter(Boolean)
+    .slice(0, 5);
+}
+
+function buildFallbackIngredientKeywords(label: string) {
+  return [
+    label,
+    `${label} 세럼`,
+    `${label} 앰플`,
+    `${label} 에센스`,
+    `${label} 세럼 추천`,
+    `${label} 앰플 추천`,
+  ];
+}
+
+function normalizeGroupLabel(value: string) {
+  return value.toLocaleLowerCase("ko-KR").replace(/[\s/_-]+/g, "");
 }
 
 function buildPage2Insights(
@@ -383,20 +449,70 @@ function buildPage2Insights(
   const strongestIngredient = searchTrend.series
     .slice()
     .sort((a, b) => Number(b.values.at(-1) || 0) - Number(a.values.at(-1) || 0))[0];
+  const fastestGrowthIngredient = searchTrend.series
+    .map((series) => ({ ...series, growth: calculateSeriesGrowth(series.values) }))
+    .sort((a, b) => b.growth - a.growth)[0];
+  const concernLabels = new Map(CONCERN_SIGNAL_GROUPS.map((group) => [group.key, group.label]));
   const strongestConcern = concernTable.flatMap((row) =>
     Object.entries(row)
       .filter(([key]) => key !== "age")
-      .map(([key, value]) => ({ age: String(row.age), key, value: Number(value || 0) })),
+      .map(([key, value]) => ({
+        age: String(row.age),
+        label: concernLabels.get(key) || key,
+        value: Number(value || 0),
+      })),
   ).sort((a, b) => b.value - a.value)[0];
+  const insights: string[] = [];
 
-  return [
-    strongestIngredient
-      ? `${strongestIngredient.ingredient}의 현재 검색 관심도가 주요 성분 중 가장 높습니다.`
-      : "표시할 성분 검색 관심도 데이터가 없습니다.",
-    strongestConcern
-      ? `${strongestConcern.age}에서 ${strongestConcern.key} 고민 키워드 집중도가 상대적으로 높게 나타납니다.`
-      : "표시할 연령대별 피부 고민 데이터가 없습니다.",
-  ];
+  if (strongestIngredient) {
+    insights.push(`${strongestIngredient.ingredient}의 현재 검색 관심도가 주요 성분 중 가장 높습니다. MD는 대표 노출 상품과 비교 콘텐츠를 이 성분 중심으로 우선 배치할 만합니다.`);
+  }
+  if (fastestGrowthIngredient) {
+    insights.push(`${withTopicParticle(fastestGrowthIngredient.ingredient)} 선택 기간 초 대비 ${round(fastestGrowthIngredient.growth, 1)}% 변화했습니다. 상승 성분이면 소량 테스트 SKU와 광고 소재 A/B 테스트로 초기 반응을 빠르게 확인하세요.`);
+  }
+  if (strongestConcern) {
+    insights.push(`${strongestConcern.age}에서 ${strongestConcern.label} 고민 집중도가 상대적으로 높습니다. 타깃 카피는 성분명보다 고민 해결 장면과 사용감 중심으로 설계하는 것이 좋습니다.`);
+  }
+
+  return ensureInsightRange(insights, [
+    "검색 추이 데이터가 부족하면 신규 기획 확정 근거로 쓰기보다 후보 성분을 좁히는 신호로만 활용하세요.",
+    "연령대별 피부 고민 데이터가 부족하면 상세페이지 메시지는 범용 효능보다 리뷰에서 검증된 사용감 표현을 우선 적용하세요.",
+  ], 2, 5);
+}
+
+function calculateSeriesGrowth(values: number[]) {
+  const finiteValues = values.filter((value) => Number.isFinite(Number(value)));
+  if (finiteValues.length < 2) return 0;
+  const start = Number(finiteValues[0]);
+  const end = Number(finiteValues.at(-1) || 0);
+  return start > 0 ? ((end - start) / start) * 100 : 0;
+}
+
+function withTopicParticle(value: string) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const lastChar = Array.from(text).at(-1) || "";
+  const code = lastChar.charCodeAt(0);
+  const hasBatchim = code >= 0xac00 && code <= 0xd7a3 ? (code - 0xac00) % 28 > 0 : false;
+  return `${text}${hasBatchim ? "은" : "는"}`;
+}
+
+function ensureInsightRange(insights: string[], fallback: string[], minItems: number, maxItems: number) {
+  const unique: string[] = [];
+
+  insights.forEach((item) => {
+    const text = item.trim();
+    if (!text || unique.includes(text)) return;
+    unique.push(text);
+  });
+  fallback.forEach((item) => {
+    if (unique.length >= minItems) return;
+    const text = item.trim();
+    if (!text || unique.includes(text)) return;
+    unique.push(text);
+  });
+
+  return unique.slice(0, maxItems);
 }
 
 function toDateString(date: Date) {
