@@ -7,6 +7,7 @@ import {
   fetchDemandSupplyMatrixFromSupabase,
 } from "@/lib/demand-supply-matrix";
 import { fetchPriceDistributionFromSupabase, getEmptyPriceDistribution } from "@/lib/price-distribution";
+import { createClient } from "@/utils/supabase/client";
 import type {
   AlertItem,
   ConcernMetric,
@@ -97,6 +98,7 @@ type DatalabWeeklyInterestResponse = {
     ingredientPopularity?: unknown;
     ingredientDemand?: unknown;
   };
+  page2?: Partial<DashboardData["page2"]>;
 };
 
 const DATALAB_WEEKLY_API_REQUIRED_MESSAGE = "네이버 데이터랩 주간 검색 관심도를 불러오지 못했습니다.";
@@ -413,7 +415,11 @@ function mergeDashboardSignals(current: DashboardData, payload: DashboardSignals
 }
 
 function mergeIngredientTrend(current: DashboardData, payload: Partial<DashboardData["page2"]>) {
-  if (!payload.searchTrend?.dates?.length || !payload.searchTrend?.series?.length) return current;
+  const hasSearchTrend = Boolean(payload.searchTrend?.dates?.length && payload.searchTrend?.series?.length);
+  const hasConcernTable = Boolean(payload.concernTable?.length && payload.concernMetrics?.length);
+
+  if (!hasSearchTrend && !hasConcernTable) return current;
+
   return {
     ...current,
     page2: {
@@ -424,7 +430,10 @@ function mergeIngredientTrend(current: DashboardData, payload: Partial<Dashboard
         ...current.page2.selectedSummary,
         ...(payload.selectedSummary || {}),
       },
-      searchTrend: payload.searchTrend,
+      searchTrend: hasSearchTrend ? payload.searchTrend! : current.page2.searchTrend,
+      concernMetrics: hasConcernTable ? payload.concernMetrics! : current.page2.concernMetrics,
+      concernTable: hasConcernTable ? payload.concernTable! : current.page2.concernTable,
+      insights: payload.insights?.length ? payload.insights : current.page2.insights,
     },
   };
 }
@@ -474,6 +483,178 @@ function calculateSeriesGrowth(series?: SearchTrendSeries, fallback = 0) {
   const start = Number(values[0]);
   const end = Number(values[values.length - 1]);
   return start ? ((end - start) / start) * 100 : fallback;
+}
+
+const MARKET_PRODUCT_TABLE_CANDIDATES = ["product_main_ingredients", "main_ingrdients", "main_ingredients"] as const;
+const MARKET_INGREDIENT_SELECT_CANDIDATES = [
+  "goods_no, ingredient_name",
+  "goods_no, main_ingredient",
+  "goods_no, ingredient",
+  "goods_no, ingredient_label",
+  "goods_no, name",
+] as const;
+const MARKET_SNAPSHOT_SELECT_CANDIDATES = [
+  "goods_no, collected_date",
+  "goods_no, snapshot_date",
+  "goods_no, created_at",
+] as const;
+
+type MarketIngredientRow = Record<string, unknown> & {
+  goods_no?: string | number | null;
+};
+
+type MarketSnapshotRow = Record<string, unknown> & {
+  goods_no?: string | number | null;
+  collected_date?: string | null;
+  snapshot_date?: string | null;
+  created_at?: string | null;
+};
+
+function normalizeMarketText(value: unknown) {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function getMarketIngredientName(row: MarketIngredientRow) {
+  return String(
+    row.ingredient_name ??
+    row.main_ingredient ??
+    row.ingredient ??
+    row.ingredient_label ??
+    row.name ??
+    "",
+  ).trim();
+}
+
+function getSnapshotDate(row: MarketSnapshotRow) {
+  return String(row.collected_date ?? row.snapshot_date ?? row.created_at ?? "").slice(0, 10);
+}
+
+function getIngredientAliases(label: string) {
+  const normalizedLabel = label.toLowerCase();
+  const aliasesByLabel: Record<string, string[]> = {
+    "나이아신아마이드": ["나이아신아마이드", "니아신아마이드", "나이아신", "niacinamide"],
+    "히알루론산": ["히알루론산", "히알루론", "히알루로닉", "hyaluronic"],
+    "병풀/시카": ["병풀", "시카", "센텔라", "cica", "centella"],
+    "PDRN": ["pdrn", "피디알엔", "피디알앤", "연어 dna"],
+    "레티놀": ["레티놀", "레티날", "retinol", "retinal"],
+  };
+
+  return aliasesByLabel[label] || [label, normalizedLabel];
+}
+
+function isMarketIngredientMatch(name: string, aliases: string[]) {
+  const normalized = normalizeMarketText(name);
+  return aliases.some((alias) => normalized.includes(normalizeMarketText(alias)));
+}
+
+async function selectMarketRows<T extends Record<string, unknown>>(
+  table: string,
+  selectCandidates: readonly string[],
+) {
+  const supabase = createClient();
+
+  for (const selectQuery of selectCandidates) {
+    const { data, error } = await supabase
+      .from(table)
+      .select(selectQuery)
+      .limit(10000);
+
+    if (!error) return (data || []) as unknown as T[];
+
+    console.error(`Supabase ${table} 조회 실패`, { selectQuery, message: error.message });
+  }
+
+  throw new Error(`${table}에서 필요한 컬럼을 찾지 못했습니다.`);
+}
+
+async function fetchMarketProductsFromSupabase(ingredientLabels: string[]): Promise<MarketProduct[]> {
+  const uniqueLabels = Array.from(new Set(ingredientLabels.filter(Boolean)));
+
+  if (!uniqueLabels.length) return [];
+
+  let ingredientRows: MarketIngredientRow[] = [];
+  let usedTable = "";
+
+  for (const tableName of MARKET_PRODUCT_TABLE_CANDIDATES) {
+    try {
+      ingredientRows = await selectMarketRows<MarketIngredientRow>(tableName, MARKET_INGREDIENT_SELECT_CANDIDATES);
+      usedTable = tableName;
+      if (ingredientRows.length) break;
+    } catch (error) {
+      console.error(`${tableName} 성분 상품 수 조회 실패`, error);
+    }
+  }
+
+  if (!ingredientRows.length) return [];
+
+  const goodsByIngredient = new Map<string, Set<string>>();
+
+  uniqueLabels.forEach((label) => {
+    const aliases = getIngredientAliases(label);
+    const goodsNos = new Set<string>();
+
+    ingredientRows.forEach((row) => {
+      const goodsNo = String(row.goods_no ?? "").trim();
+      const ingredientName = getMarketIngredientName(row);
+      if (!goodsNo || !ingredientName) return;
+      if (isMarketIngredientMatch(ingredientName, aliases)) goodsNos.add(goodsNo);
+    });
+
+    goodsByIngredient.set(label, goodsNos);
+  });
+
+  let snapshotRows: MarketSnapshotRow[] = [];
+  try {
+    snapshotRows = await selectMarketRows<MarketSnapshotRow>("product_snapshots", MARKET_SNAPSHOT_SELECT_CANDIDATES);
+  } catch (error) {
+    console.error("product_snapshots 전주 제품 수 조회 실패", error);
+  }
+
+  const snapshotDates = snapshotRows.map(getSnapshotDate).filter(Boolean).sort();
+  const latestDate = snapshotDates.at(-1);
+  const previousDate = latestDate ? toDateStringFromDate(addDays(new Date(latestDate), -7)) : "";
+  const snapshotsByGoodsNo = new Map<string, string[]>();
+
+  snapshotRows.forEach((row) => {
+    const goodsNo = String(row.goods_no ?? "").trim();
+    const date = getSnapshotDate(row);
+    if (!goodsNo || !date) return;
+    const dates = snapshotsByGoodsNo.get(goodsNo) || [];
+    dates.push(date);
+    snapshotsByGoodsNo.set(goodsNo, dates);
+  });
+
+  return uniqueLabels.map((label) => {
+    const goodsNos = goodsByIngredient.get(label) || new Set<string>();
+    const productCount = goodsNos.size;
+    const previousCount = previousDate
+      ? Array.from(goodsNos).filter((goodsNo) => (snapshotsByGoodsNo.get(goodsNo) || []).some((date) => date <= previousDate)).length
+      : 0;
+    const hasPreviousBaseline = previousCount > 0;
+    const safePreviousCount = hasPreviousBaseline ? previousCount : productCount;
+    const growthCount = hasPreviousBaseline ? productCount - previousCount : 0;
+    const growthRate = hasPreviousBaseline ? (growthCount / previousCount) * 100 : 0;
+
+    return {
+      ingredient_key: label,
+      ingredient_label: label,
+      product_count: productCount,
+      previous_product_count: safePreviousCount,
+      product_growth_rate: Number.isFinite(growthRate) ? roundNumber(growthRate, 1) : 0,
+      product_growth_count: growthCount,
+      source: hasPreviousBaseline ? usedTable : `${usedTable}:no_previous_snapshot`,
+    };
+  });
+}
+
+function addDays(date: Date, days: number) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function toDateStringFromDate(date: Date) {
+  return date.toISOString().slice(0, 10);
 }
 
 function getRankBarWidth(item: RankItem, items: RankItem[], barMetric: "growth" | "searchIndex") {
@@ -1011,56 +1192,38 @@ function MatrixLegend() {
   );
 }
 
-type DemandSupplyTooltipState = {
-  item: DemandSupplyItem;
-  x: number;
-  y: number;
-};
-
-function getDemandSupplyInterpretation(item: DemandSupplyItem) {
-  const gap = item.gap ?? item.demand - item.supply;
-  const gapDelta = item.gapDelta ?? 0;
-
-  if (item.status === "growth") {
-    return "수요와 공급이 모두 높아 이미 시장이 형성된 성장 성분입니다.";
-  }
-  if (item.status === "opportunity" || item.status === "shortage") {
-    return gapDelta > 0
-      ? "수요가 공급보다 높고 격차도 커져 기회 우선순위가 높은 성분입니다."
-      : "수요는 높지만 공급이 상대적으로 낮아 기회가 있는 성분입니다.";
-  }
-  if (item.status === "oversupply") {
-    return "공급은 높지만 수요가 낮아 공급 과잉 리스크를 점검해야 하는 성분입니다.";
-  }
-  return "수요와 공급 모두 낮아 추이를 지켜볼 관찰 성분입니다.";
-}
-
-function formatMatrixChange(value?: number) {
-  if (!Number.isFinite(value)) return "-";
-  const sign = Number(value) > 0 ? "+" : "";
-  return `${sign}${Number(value).toFixed(1)}%`;
-}
-
-function formatMatrixNumber(value?: number) {
-  if (!Number.isFinite(value)) return "-";
-  return Number(value).toFixed(1);
-}
-
 function MatrixMotionGuide() {
   return (
-    <div className="matrix-motion-guide" aria-label="수요 공급 매트릭스 이동 방향 설명">
-      <span className="matrix-motion-text">
+    <div className="matrix-motion-guide" aria-label="수요 공급 매트릭스 이동 표현 설명">
+      <span className="matrix-motion-text matrix-motion-trail-text">
         옅은 작은 잔상 → 진한 큰 잔상 = 전주에서 현재로 이동한 흔적
       </span>
       <span className="matrix-motion-divider">·</span>
-      <span className="matrix-motion-text">
+      <span className="matrix-motion-text matrix-motion-current-text">
         진한 버블 = 현재 위치
       </span>
     </div>
   );
 }
 
-function DemandSupplyTooltip({ tooltip }: { tooltip: DemandSupplyTooltipState }) {
+type MatrixTooltipState = {
+  item: DemandSupplyItem;
+  x: number;
+  y: number;
+};
+
+function formatMatrixScore(value?: number) {
+  if (!Number.isFinite(Number(value))) return "-";
+  return Number(value).toFixed(1);
+}
+
+function formatMatrixChange(value?: number) {
+  if (!Number.isFinite(Number(value))) return "-";
+  const number = Number(value);
+  return `${number > 0 ? "+" : ""}${number.toFixed(1)}%`;
+}
+
+function MatrixBubbleTooltip({ tooltip }: { tooltip: MatrixTooltipState }) {
   const { item } = tooltip;
 
   return (
@@ -1073,30 +1236,29 @@ function DemandSupplyTooltip({ tooltip }: { tooltip: DemandSupplyTooltipState })
       <div className="matrix-tooltip-grid">
         <span>영역</span>
         <strong>{STATUS_LABELS[item.status]}</strong>
-        <span>현재 수요</span>
-        <strong>{formatMatrixNumber(item.demand)}</strong>
-        <span>전주 수요</span>
-        <strong>{formatMatrixNumber(item.previousDemand)}</strong>
-        <span>현재 공급</span>
-        <strong>{formatMatrixNumber(item.supply)}</strong>
-        <span>전주 공급</span>
-        <strong>{formatMatrixNumber(item.previousSupply)}</strong>
-        <span>수요 WoW</span>
-        <strong className={(item.demandWow ?? item.growth) >= 0 ? "positive" : "negative"}>{formatMatrixChange(item.demandWow ?? item.growth)}</strong>
-        <span>수요 MoM</span>
-        <strong className={(item.demandMom ?? 0) >= 0 ? "positive" : "negative"}>{formatMatrixChange(item.demandMom)}</strong>
-        <span>공급 WoW</span>
-        <strong className={(item.supplyWow ?? 0) >= 0 ? "positive" : "negative"}>{formatMatrixChange(item.supplyWow)}</strong>
+        <span>수요점수</span>
+        <strong>{formatMatrixScore(item.demand)}</strong>
+        <span>공급점수</span>
+        <strong>{formatMatrixScore(item.supply)}</strong>
+        <span>이전 수요</span>
+        <strong>{formatMatrixScore(item.previousDemand)}</strong>
+        <span>이전 공급</span>
+        <strong>{formatMatrixScore(item.previousSupply)}</strong>
+        <span>수요 증감률</span>
+        <strong className={Number(item.demandWow ?? item.growth ?? 0) >= 0 ? "positive" : "negative"}>
+          {formatMatrixChange(item.demandWow ?? item.growth)}
+        </strong>
+        <span>공급 증감률</span>
+        <strong className={Number(item.supplyWow ?? 0) >= 0 ? "positive" : "negative"}>
+          {formatMatrixChange(item.supplyWow)}
+        </strong>
         <span>제품 수</span>
-        <strong>{item.supplyCount ?? "-"}개</strong>
-        <span>버블 크기</span>
-        <strong>상대 규모 {Math.round(item.size)}</strong>
+        <strong>{item.supplyCount !== undefined ? `${formatNumber(item.supplyCount)}개` : "-"}</strong>
         <span>수요-공급 격차</span>
-        <strong className={(item.gap ?? 0) >= 0 ? "positive" : "negative"}>{formatMatrixNumber(item.gap)}</strong>
-        <span>격차 변화</span>
-        <strong className={(item.gapDelta ?? 0) >= 0 ? "positive" : "negative"}>{formatMatrixNumber(item.gapDelta)}</strong>
+        <strong className={Number(item.gap ?? 0) >= 0 ? "positive" : "negative"}>
+          {formatMatrixScore(item.gap)}
+        </strong>
       </div>
-      <p>{getDemandSupplyInterpretation(item)} 버블 크기는 공급 제품 수를 기본으로, 현재 수요를 일부 반영한 상대적 중요도입니다.</p>
     </div>
   );
 }
@@ -1112,7 +1274,7 @@ function DemandSupplyPlot({
   error: string;
   threshold?: number;
 }) {
-  const [tooltip, setTooltip] = useState<DemandSupplyTooltipState | null>(null);
+  const [tooltip, setTooltip] = useState<MatrixTooltipState | null>(null);
   const shellRef = useRef<HTMLDivElement | null>(null);
   const width = 720;
   const height = 420;
@@ -1124,8 +1286,8 @@ function DemandSupplyPlot({
 
   const clampTooltipPosition = (x: number, y: number) => {
     const rect = shellRef.current?.getBoundingClientRect();
-    const maxX = Math.max(16, (rect?.width || 0) - 300);
-    const maxY = Math.max(16, (rect?.height || 0) - 180);
+    const maxX = Math.max(12, (rect?.width || 0) - 310);
+    const maxY = Math.max(12, (rect?.height || 0) - 250);
 
     return {
       x: Math.min(Math.max(x, 12), maxX),
@@ -1186,6 +1348,7 @@ function DemandSupplyPlot({
         ))}
         <line x1={xFor(threshold)} x2={xFor(threshold)} y1={padding.top} y2={height - padding.bottom} className="chart-threshold-line" />
         <line x1={padding.left} x2={width - padding.right} y1={yFor(threshold)} y2={yFor(threshold)} className="chart-threshold-line" />
+
         {items.map((item) => (
           typeof item.previousSupply === "number" && typeof item.previousDemand === "number"
             ? (() => {
@@ -1223,10 +1386,13 @@ function DemandSupplyPlot({
             })()
             : null
         ))}
+
         {items.map((item) => {
           const bubbleX = xFor(item.supply);
           const bubbleY = yFor(item.demand);
-          const radius = Math.max(10, item.size / 2);          return (
+          const radius = Math.max(10, item.size / 2);
+
+          return (
             <g
               key={item.ingredient}
               className="matrix-bubble"
@@ -1257,9 +1423,27 @@ function DemandSupplyPlot({
         <text x={width / 2} y={height - 5} className="chart-axis-title" textAnchor="middle">공급 지수</text>
         <text x="16" y={height / 2} className="chart-axis-title" textAnchor="middle" transform={`rotate(-90 16 ${height / 2})`}>수요 지수</text>
       </svg>
-      {tooltip ? <DemandSupplyTooltip tooltip={tooltip} /> : null}
+      {tooltip ? <MatrixBubbleTooltip tooltip={tooltip} /> : null}
     </div>
   );
+}
+
+function formatTrendDateLabel(date: string) {
+  const match = date.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return date;
+  const [, , month, day] = match;
+  return `${Number(month)}/${Number(day)}`;
+}
+
+function getTrendTickIndexes(length: number) {
+  if (length <= 1) return [0];
+
+  // 스냅샷처럼 데이터 포인트가 적을 때는 빠지는 날짜 없이 모두 표시한다.
+  if (length <= 10) return Array.from({ length }, (_, index) => index);
+
+  const maxTicks = 7;
+  const indexes = Array.from({ length: maxTicks }, (_, index) => Math.round((index / Math.max(1, maxTicks - 1)) * (length - 1)));
+  return Array.from(new Set(indexes));
 }
 
 function SearchTrendPlot({
@@ -1275,7 +1459,7 @@ function SearchTrendPlot({
     return (
       <div className="plot-shell js-plot">
         <div className="empty-state api-state">
-          {error ? `FastAPI 오류: ${error}` : isLoading ? "Naver DataLab API에서 검색 관심도 추이를 불러오는 중입니다." : "표시할 검색 관심도 데이터가 없습니다."}
+          {error ? `Naver DataLab 오류: ${error}` : isLoading ? "Naver DataLab API에서 검색 관심도 추이를 불러오는 중입니다." : "표시할 검색 관심도 데이터가 없습니다."}
         </div>
       </div>
     );
@@ -1283,22 +1467,65 @@ function SearchTrendPlot({
 
   const width = 720;
   const height = 360;
-  const padding = { top: 28, right: 28, bottom: 64, left: 58 };
-  const values = trend.series.flatMap((item) => item.values);
+  const padding = { top: 30, right: 30, bottom: 74, left: 58 };
+  const values = trend.series.flatMap((item) => item.values).filter((value) => Number.isFinite(Number(value)));
   const min = Math.max(0, Math.floor(Math.min(...values) - 5));
   const max = Math.min(105, Math.ceil(Math.max(...values) + 5));
   const xFor = (index: number) => padding.left + (index / Math.max(1, trend.dates.length - 1)) * (width - padding.left - padding.right);
   const yFor = (value: number) => padding.top + ((max - value) / Math.max(1, max - min)) * (height - padding.top - padding.bottom);
+  const xTicks = getTrendTickIndexes(trend.dates.length);
+  const yTickCount = 5;
+  const yTicks = Array.from({ length: yTickCount }, (_, index) => min + ((max - min) * index) / Math.max(1, yTickCount - 1));
 
   return (
-    <div className="plot-shell chart-shell">
+    <div className="plot-shell chart-shell trend-plot-shell">
+      <div className="trend-legend" aria-label="성분 검색 관심도 추이 범례">
+        {trend.series.map((series) => {
+          const color = series.color || DATALAB_TREND_COLORS[series.ingredient] || "#6B7280";
+          return (
+            <span className="trend-legend-item" key={series.ingredient}>
+              <i style={{ background: color }} />
+              <span>{series.ingredient}</span>
+            </span>
+          );
+        })}
+      </div>
       <svg className="chart-svg" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="성분 검색 관심도 추이">
+        {yTicks.map((tick) => {
+          const y = yFor(tick);
+          return (
+            <g key={`trend-y-${tick}`}>
+              <line x1={padding.left} x2={width - padding.right} y1={y} y2={y} className="chart-grid-line" />
+              <text x={padding.left - 10} y={y + 4} className="chart-axis-label" textAnchor="end">
+                {Math.round(tick)}
+              </text>
+            </g>
+          );
+        })}
+
+        {xTicks.map((index) => {
+          const x = xFor(index);
+          return (
+            <g key={`trend-x-${index}`}>
+              <line x1={x} x2={x} y1={padding.top} y2={height - padding.bottom} className="chart-grid-line subtle" />
+              <text x={x} y={height - 42} className="chart-axis-label" textAnchor="middle">
+                {formatTrendDateLabel(trend.dates[index])}
+              </text>
+            </g>
+          );
+        })}
+
+        <line x1={padding.left} x2={width - padding.right} y1={height - padding.bottom} y2={height - padding.bottom} className="chart-axis-line" />
+        <line x1={padding.left} x2={padding.left} y1={padding.top} y2={height - padding.bottom} className="chart-axis-line" />
+        <text x={width / 2} y={height - 10} className="chart-axis-title" textAnchor="middle">기간</text>
+        <text x="16" y={(height - padding.bottom + padding.top) / 2} className="chart-axis-title" textAnchor="middle" transform={`rotate(-90 16 ${(height - padding.bottom + padding.top) / 2})`}>검색 관심도</text>
+
         {trend.series.map((series) => {
           const color = series.color || DATALAB_TREND_COLORS[series.ingredient] || "#6B7280";
           const points = series.values.map((value, index) => `${xFor(index)},${yFor(value)}`).join(" ");
           return (
             <g key={series.ingredient}>
-              <polyline points={points} fill="none" stroke={color} strokeWidth="3" />
+              <polyline points={points} fill="none" stroke={color} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
               {series.values.map((value, index) => (
                 <circle key={`${series.ingredient}-${index}`} cx={xFor(index)} cy={yFor(value)} r="4" fill={color} />
               ))}
@@ -1306,6 +1533,7 @@ function SearchTrendPlot({
           );
         })}
       </svg>
+
     </div>
   );
 }
@@ -1321,7 +1549,10 @@ function MarketProductPlot({ products }: { products: MarketProduct[] }) {
   return (
     <div className="plot-shell compact bar-chart">
       {rows.map((item) => {
-        const growth = getGrowthDisplay(getProductGrowth(item));
+        const hasPreviousBaseline = !String(item.source || "").includes("no_previous_snapshot");
+        const growth = hasPreviousBaseline
+          ? getGrowthDisplay(getProductGrowth(item))
+          : { text: "전주 데이터 없음", color: "#64748b" };
         return (
           <div className="bar-chart-row" key={item.ingredient_key}>
             <div className="bar-chart-label">
@@ -1359,7 +1590,7 @@ function ConcernHeatmap({
   if (!table.length) {
     return (
       <div className="empty-state api-state">
-        {error ? `FastAPI 오류: ${error}` : isLoading ? "Naver DataLab API에서 연령대별 피부 고민 데이터를 불러오는 중입니다." : "표시할 피부 고민 데이터가 없습니다."}
+        {error ? `Naver DataLab 오류: ${error}` : isLoading ? "Naver DataLab API에서 연령대별 피부 고민 데이터를 불러오는 중입니다." : "표시할 피부 고민 데이터가 없습니다."}
       </div>
     );
   }
@@ -1531,20 +1762,60 @@ export default function Dashboard() {
   async function loadIngredientTrend(periodKey: string) {
     setLoadState((current) => ({ ...current, searchTrend: "loading", searchTrendError: "" }));
     try {
-      const payload = await fetchDatalabJson<DashboardSummaryResponse>("/dashboard/summary");
-      const trendPayload = payload.page2?.searchTrend ? payload.page2 : {};
+      const payload = await fetchLocalJson<DatalabWeeklyInterestResponse>(`/api/dashboard/datalab-weekly-interest?scope=page2&period=${encodeURIComponent(periodKey)}`);
+      const trendPayload = payload.page2 || {};
 
-      if (trendPayload.searchTrend) {
+      if (trendPayload.searchTrend || trendPayload.concernTable) {
         setData((current) => mergeIngredientTrend(current, trendPayload));
       }
-      setLoadState((current) => ({ ...current, searchTrend: "ready", searchTrendError: "" }));
+
+      const hasTrend = Boolean(trendPayload.searchTrend?.dates?.length && trendPayload.searchTrend?.series?.length);
+      const hasConcern = Boolean(trendPayload.concernTable?.length && trendPayload.concernMetrics?.length);
+      setLoadState((current) => ({
+        ...current,
+        searchTrend: hasTrend && hasConcern ? "ready" : "error",
+        searchTrendError: hasTrend && hasConcern ? "" : "Naver DataLab에서 2페이지 검색 추이/연령대별 고민 데이터를 불러오지 못했습니다.",
+      }));
+
+      if (hasTrend) {
+        const labels = trendPayload.searchTrend?.series?.map((series) => series.ingredient) || [];
+        void fetchMarketProductsFromSupabase(labels).then((marketProducts) => {
+          setData((current) => ({
+            ...current,
+            page2: {
+              ...current.page2,
+              marketProducts,
+            },
+          }));
+        }).catch((marketError) => {
+          console.error("Supabase 성분별 시장 제품 수 조회 실패", marketError);
+        });
+      }
     } catch (error) {
-      console.error("FastAPI 검색 추이 조회 실패", { periodKey, error });
+      console.error("Naver DataLab 2페이지 검색 추이/히트맵 조회 실패", { periodKey, error });
       setLoadState((current) => ({
         ...current,
         searchTrend: "error",
         searchTrendError: error instanceof Error ? error.message : String(error),
       }));
+    }
+  }
+
+  async function loadMarketProducts() {
+    try {
+      const labels = data.page2.searchTrend.series.length
+        ? data.page2.searchTrend.series.map((series) => series.ingredient)
+        : MAIN_INGREDIENTS.map((item) => item.label);
+      const marketProducts = await fetchMarketProductsFromSupabase(labels);
+      setData((current) => ({
+        ...current,
+        page2: {
+          ...current.page2,
+          marketProducts,
+        },
+      }));
+    } catch (error) {
+      console.error("Supabase 성분별 시장 제품 수 조회 실패", error);
     }
   }
 
@@ -1613,6 +1884,7 @@ export default function Dashboard() {
     didRequestInitialData.current = true;
     void refreshDatalabData("snapshot");
     void loadPriceDistribution();
+    void loadMarketProducts();
     void loadDemandSupplyMatrix();
   }, []);
 
@@ -1754,6 +2026,16 @@ export default function Dashboard() {
                   <div className="price-toggle-control" aria-label="가격 기준 선택">
                     <button className={`period-button ${activePriceType === "sale" ? "active" : ""}`} type="button" onClick={() => setActivePriceType("sale")}>판매가</button>
                     <button className={`period-button ${activePriceType === "list" ? "active" : ""}`} type="button" onClick={() => setActivePriceType("list")}>정가</button>
+                    <button
+                      className="period-button price-refresh-button"
+                      type="button"
+                      onClick={() => void loadPriceDistribution()}
+                      disabled={isPriceLoading}
+                      aria-label="가격 데이터 새로고침"
+                      title="가격 데이터 새로고침"
+                    >
+                      {isPriceLoading ? "…" : "↻"}
+                    </button>
                     <span className="card-meta">{isPriceLoading ? "Supabase 연결 중" : loadState.priceDistributionError ? "Supabase 오류" : "10ml 기준"}</span>
                   </div>
                 </div>
@@ -1855,22 +2137,21 @@ export default function Dashboard() {
                   <span className="card-meta">전처리 리테일 데이터 기준</span>
                 </div>
                 <p className="card-helper">검색 관심도와 함께 시장 공급 규모를 비교해 볼 수 있는 보조 지표입니다.</p>
-                <div className="product-data-note">서버의 전처리 성분 통계에서 불러옵니다.</div>
                 <MarketProductPlot products={marketProducts} />
               </section>
 
               <section className="card concern-card">
                 <div className="card-header">
                   <span>연령대별 피부 고민 집중도</span>
-                  <span className="card-meta">heatmap</span>
+                  <span className="card-meta">Naver DataLab age ratio</span>
                 </div>
                 <p className="card-helper">주름/탄력, 잡티/톤, 트러블/진정, 건조/장벽, 모공/피지 키워드 집중도로 타겟 맥락을 해석합니다.</p>
                 <div className="heatmap-wrap">
                   <ConcernHeatmap
                     metrics={data.page2.concernMetrics}
                     table={data.page2.concernTable}
-                    isLoading={isDashboardLoading}
-                    error={loadState.dashboardSignalsError}
+                    isLoading={isTrendLoading}
+                    error={loadState.searchTrendError}
                   />
                 </div>
               </section>
