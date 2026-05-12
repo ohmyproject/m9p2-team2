@@ -25,32 +25,45 @@ def enter_oliveyoung_from_naver(driver):
 
     time.sleep(2)
 
-    link = find_oliveyoung_link(driver)
-
-    if not link:
-        raise Exception("올리브영 공식몰 링크를 찾지 못했습니다.")
-
-    href = link.get_attribute("href")
+    href = find_oliveyoung_href(driver)
 
     if not href:
-        raise Exception("올리브영 링크 주소를 가져오지 못했습니다.")
+        raise Exception("올리브영 공식몰 링크를 찾지 못했습니다.")
 
     print("[3] 현재 탭에서 올리브영 이동")
     driver.get(href)
 
     wait.until(lambda d: "oliveyoung.co.kr" in d.current_url)
 
+    time.sleep(3)
+
     print("[완료] 올리브영 접속")
     print("[현재 URL]", driver.current_url)
 
 
-def find_oliveyoung_link(driver):
-    links = driver.find_elements(By.TAG_NAME, "a")
+def find_oliveyoung_href(driver):
+    """
+    stale element 방지용.
+    WebElement를 반환하지 않고 href 문자열만 반환한다.
+    """
 
-    for link in links:
-        href = link.get_attribute("href") or ""
+    for attempt in range(5):
+        try:
+            links = driver.find_elements(By.TAG_NAME, "a")
 
-        if "oliveyoung.co.kr" in href:
-            return link
+            for link in links:
+                try:
+                    href = link.get_attribute("href") or ""
+
+                    if "oliveyoung.co.kr" in href:
+                        return href
+
+                except Exception:
+                    continue
+
+        except Exception:
+            pass
+
+        time.sleep(1)
 
     return None
