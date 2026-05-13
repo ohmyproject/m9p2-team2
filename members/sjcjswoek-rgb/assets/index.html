@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>뷰티 성분 대시보드</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="dash">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-logo">
+        <div class="logo-emoji">🧴</div>
+        <div class="logo-title">Beauty Signals</div>
+        <div class="logo-sub">뷰티 시장 인사이트</div>
+      </div>
+      
+      <nav>
+        <div class="nav-section">
+          <div class="nav-label">분석</div>
+          <div class="nav-item" data-page="page1">
+            <span class="nav-icon">📊</span>
+            <span>성분 트렌드</span>
+          </div>
+          <div class="nav-item" data-page="page2">
+            <span class="nav-icon">📈</span>
+            <span>검색 추세</span>
+          </div>
+          <div class="nav-item" data-page="page3">
+            <span class="nav-icon">💬</span>
+            <span>성분 리뷰</span>
+          </div>
+          <div class="nav-item" data-page="page4">
+            <span class="nav-icon">⚠️</span>
+            <span>알림</span>
+          </div>
+          <div class="nav-item active" data-page="page5">
+            <span class="nav-icon">🎯</span>
+            <span>전략 수립</span>
+          </div>
+        </div>
+      </nav>
+
+      <div class="sidebar-footer">
+        v1.0 Beta
+        <br>마지막 업데이트: 2026-05-11
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main">
+      <div class="content">
+        <!-- Page 1: 성분 트렌드 -->
+        <section id="page1" class="panel">
+          <div class="page-header">
+            <div>
+              <div class="page-badge">📊 Page 1</div>
+              <h1>뷰티 성분 트렌드 분석</h1>
+              <p>올리브영 제품 데이터를 기반으로 한 성분별 공급 수요 분석</p>
+            </div>
+            <div class="page-header-actions">
+              <div class="data-status-slot">
+                <div class="data-status-card">
+                  <div class="data-status-copy">
+                    <div class="data-status-line">
+                      <span>분석 제품:</span>
+                      <strong id="page1-product-count">3,842개</strong>
+                    </div>
+                    <div class="data-status-line">
+                      <span>분석 성분:</span>
+                      <strong id="page1-ingredient-count">126개</strong>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="summary-strip" id="page1-summary">
+            <!-- 동적으로 생성됨 -->
+          </div>
+
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px;">
+            <div id="page1-price-distribution" style="background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08);"></div>
+            <div id="page1-demand-supply" style="background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08);"></div>
+          </div>
+
+          <div id="page1-insights" style="background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08);"></div>
+        </section>
+
+        <!-- Page 2: 검색 추세 -->
+        <section id="page2" class="panel">
+          <div class="page-header">
+            <div>
+              <div class="page-badge">📈 Page 2</div>
+              <h1>네이버 데이터랩 검색 추세</h1>
+              <p>성분별 검색 관심도 추적</p>
+            </div>
+            <div class="page-header-actions">
+              <button class="btn btn-outline" onclick="fetchPage2Data('snapshot')">7일</button>
+              <button class="btn btn-outline" onclick="fetchPage2Data('1m')">1개월</button>
+              <button class="btn btn-outline" onclick="fetchPage2Data('6m')">6개월</button>
+              <button class="btn btn-outline" onclick="fetchPage2Data('1y')">1년</button>
+            </div>
+          </div>
+
+          <div id="page2-chart" style="background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); height: 400px;"></div>
+
+          <div style="margin-top: 24px; background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08);">
+            <h3 style="margin-bottom: 16px; font-weight: 900; color: #0b1b4f;">성분별 검색 추세 상세</h3>
+            <div id="page2-trends"></div>
+          </div>
+        </section>
+
+        <!-- Page 3: 성분 리뷰 -->
+        <section id="page3" class="panel">
+          <div class="page-header">
+            <div>
+              <div class="page-badge">💬 Page 3</div>
+              <h1>성분별 리뷰 분석</h1>
+              <p>올리브영 리뷰 데이터 기반 감정 분석</p>
+            </div>
+          </div>
+
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px;">
+            <div id="page3-sentiment" style="background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08);"></div>
+            <div id="page3-keywords" style="background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08);"></div>
+          </div>
+
+          <div id="page3-products" style="background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08);"></div>
+        </section>
+
+        <!-- Page 4: 알림 -->
+        <section id="page4" class="panel">
+          <div class="page-header">
+            <div>
+              <div class="page-badge">⚠️ Page 4</div>
+              <h1>중요 알림</h1>
+              <p>모니터링 중인 성분별 주요 변화</p>
+            </div>
+          </div>
+
+          <div id="page4-alerts" style="background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08);"></div>
+        </section>
+
+        <!-- Page 5: 전략 수립 -->
+        <section id="page5" class="panel active agent-page-layout">
+          <div class="page-header compact-page-header">
+            <div>
+              <span class="page-badge">Page 5</span>
+              <h1>5. AI Agent</h1>
+              <p>AI가 데이터를 분석하여 실행 가능한 전략과 MD용 상품 기획안을 제안합니다.</p>
+            </div>
+            <div class="data-status-slot"></div>
+          </div>
+
+          <div class="agent-top-grid">
+            <div class="agent-input-card agent-equal-card">
+              <label for="agentPrompt">무엇을 도와드릴까요?</label>
+              <p class="agent-input-help">이번 주 성분 신호와 리뷰 이슈를 바탕으로 바로 실행할 전략을 물어보세요.</p>
+              <div class="agent-input-row">
+                <input id="agentPrompt" type="text" placeholder="예: MD용 상품 기획안 생성해줘" />
+                <button id="agentRunButton" class="btn btn-primary agent-send-button" type="button">▶</button>
+              </div>
+            </div>
+            <div class="card suggestion-card agent-equal-card">
+              <div class="card-header">추천 질문</div>
+              <div id="agentSuggestions" class="suggestion-list"></div>
+            </div>
+          </div>
+
+          <div class="agent-main-grid">
+            <div class="agent-left-column">
+              <div class="card">
+                <div class="card-header">
+                  AI 추천 인사이트
+                  <span class="card-meta">2025.04.30 ~ 2025.05.05 데이터 기준</span>
+                </div>
+                <div id="aiRecommendations" class="recommendation-grid"></div>
+              </div>
+            </div>
+            <div class="agent-side-column">
+              <div class="card">
+                <div class="card-header">타겟 전략 카드</div>
+                <div id="targetStrategy"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+      
+      
+
+
+
+
+      </div>
+    </main>
+  </div>
+
+  <!-- 스크립트 로드 순서: dashboard_data 먼저, 그 다음 app -->
+  <script src="dashboard_data.js"></script>
+  <script src="app.js"></script>
+
+
+
+
+</body>
+</html>
