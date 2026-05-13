@@ -6,6 +6,11 @@ import {
   DEFAULT_DEMAND_SUPPLY_MATRIX_CONFIG,
   fetchDemandSupplyMatrixFromSupabase,
 } from "@/lib/demand-supply-matrix";
+import {
+  ALERT_SEVERITY_LABELS,
+  ALERT_TYPE_LABELS,
+  type DailyAlertsPayload,
+} from "@/lib/alerts";
 import { fetchPriceDistributionFromSupabase, getEmptyPriceDistribution } from "@/lib/price-distribution";
 import { IngredientSelect } from "@/components/review-analysis/IngredientSelect";
 import { KeywordCards } from "@/components/review-analysis/KeywordCards";
@@ -60,7 +65,7 @@ const NAV_ITEMS: Array<{ id: TabId; index: string; label: string; badge?: string
   { id: "A", index: "01", label: "시장 요약" },
   { id: "B", index: "02", label: "검색 트렌드 분석" },
   { id: "C", index: "03", label: "소비자 리뷰 분석" },
-  { id: "D", index: "04", label: "경보", badge: "5" },
+  { id: "D", index: "04", label: "경보" },
   { id: "E", index: "05", label: "AI Agent" },
 ];
 
@@ -183,6 +188,15 @@ const INITIAL_DASHBOARD_DATA = {
     insights: [],
     priceDistribution: getEmptyPriceDistribution(),
     demandSupplyMatrix: [],
+  },
+  page4: {
+    alertDate: "",
+    summary: {
+      opportunityCount: 0,
+      inventoryRiskCount: 0,
+      reviewIssueCount: 0,
+    },
+    alerts: [],
   },
 } satisfies DashboardData;
 
@@ -538,6 +552,17 @@ function mergePage1Insights(current: DashboardData, insights: string[]) {
     page1: {
       ...current.page1,
       insights,
+    },
+  } satisfies DashboardData;
+}
+
+function mergeDailyAlerts(current: DashboardData, payload: DailyAlertsPayload) {
+  return {
+    ...current,
+    page4: {
+      alertDate: payload.alertDate,
+      summary: payload.summary,
+      alerts: payload.alerts,
     },
   } satisfies DashboardData;
 }
@@ -1272,8 +1297,8 @@ function getMarketReflectionStatus(growthRate: number, productCount: number) {
 }
 
 function getSeverityClass(severity: AlertItem["severity"]) {
-  if (severity === "높음") return "high";
-  if (severity === "낮음") return "low";
+  if (severity === "high") return "high";
+  if (severity === "low") return "low";
   return "medium";
 }
 
@@ -2071,38 +2096,135 @@ function ConcernHeatmap({
   );
 }
 
+function getAlertReasons(alert: AlertItem) {
+  const reasons = alert.reason_json.reasons;
+  if (Array.isArray(reasons)) return reasons.map(String).filter(Boolean);
+  return [`${getAlertMetricLabel(alert.detected_metric_name)} 기준값이 감지되었습니다.`];
+}
+
+function getAlertActions(alert: AlertItem) {
+  return Array.isArray(alert.action_items_json)
+    ? alert.action_items_json.map(String).filter(Boolean)
+    : [];
+}
+
+function getAlertMetricEntries(alert: AlertItem) {
+  const metrics = alert.reason_json.metrics;
+  const entries: Array<[string, string]> = [
+    [getAlertMetricLabel(alert.detected_metric_name), formatAlertMetricValue(alert.detected_metric_value, alert.detected_metric_name)],
+  ];
+
+  if (alert.baseline_metric_value !== null && alert.baseline_metric_value !== undefined && alert.baseline_metric_value !== "") {
+    entries.push(["비교 기준", formatAlertMetricValue(alert.baseline_metric_value, "baseline")]);
+  }
+
+  if (metrics && typeof metrics === "object" && !Array.isArray(metrics)) {
+    Object.entries(metrics).forEach(([label, value]) => {
+      entries.push([label, String(value)]);
+    });
+  }
+
+  const seen = new Set<string>();
+  return entries.filter(([label]) => {
+    if (seen.has(label)) return false;
+    seen.add(label);
+    return true;
+  });
+}
+
+function getRelatedLowKeywordText(alert: AlertItem) {
+  const related = alert.reason_json.relatedLowKeywords;
+  if (!Array.isArray(related)) return "";
+
+  return related
+    .map((item) => {
+      const row = item as { keyword?: unknown; count?: unknown };
+      const keyword = String(row.keyword || "").trim();
+      const count = Number(row.count || 0);
+      return keyword && count > 0 ? `${keyword} ${count}건` : "";
+    })
+    .filter(Boolean)
+    .join(", ");
+}
+
+function getNotificationStatus(alert: AlertItem) {
+  if (alert.severity !== "high") return "High 등급만 Slack/email 발송 대상입니다.";
+  if (alert.is_sent) return `${alert.sent_channel || "알림"} 발송 완료`;
+  return "Slack/email 발송 대기 대상";
+}
+
+function getAlertMetricLabel(metricName: string) {
+  const labels: Record<string, string> = {
+    demand_supply_gap: "수요-공급 격차",
+    supply_demand_gap: "공급-수요 격차",
+    negative_keyword_count: "부정 키워드 수",
+  };
+
+  return labels[metricName] || metricName || "대표 지표";
+}
+
+function formatAlertMetricValue(value: number | string | null | undefined, metricName = "") {
+  if (value === null || value === undefined || value === "") return "-";
+  const number = Number(value);
+  if (!Number.isFinite(number)) return String(value);
+  if (metricName === "negative_keyword_count") return `${formatNumber(number)}건`;
+  if (metricName === "baseline") return number > 0 && number <= 100 ? `${number.toFixed(1)}%` : number.toFixed(1);
+  return number.toFixed(1);
+}
+
+function formatAlertDate(value: string) {
+  if (!value) return "-";
+  const datePart = value.slice(0, 10);
+  const match = datePart.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return value;
+  return `${match[1]}.${match[2]}.${match[3]}`;
+}
+
 function AlertDetail({ alert }: { alert: AlertItem }) {
+  const metricEntries = getAlertMetricEntries(alert);
+  const reasons = getAlertReasons(alert);
+  const actions = getAlertActions(alert);
+  const relatedLowKeywordText = getRelatedLowKeywordText(alert);
+
   return (
     <div className="alert-detail">
       <div className="detail-title-row">
         <div>
-          <span className="detail-type">{alert.type}</span>
+          <span className="detail-type">{ALERT_TYPE_LABELS[alert.alert_type]}</span>
           <h2>{alert.title}</h2>
         </div>
-        <span className={`severity-badge ${getSeverityClass(alert.severity)}`}>{alert.severity}</span>
+        <span className={`severity-badge ${getSeverityClass(alert.severity)}`}>{ALERT_SEVERITY_LABELS[alert.severity]}</span>
       </div>
-      <p className="detail-description">{alert.description}</p>
+      <p className="detail-description">{alert.summary}</p>
 
       <div className="detail-meta-grid">
         <div>
-          <span>감지 시점</span>
-          <strong>{alert.time}</strong>
+          <span>경보 기준일</span>
+          <strong>{formatAlertDate(alert.alert_date)}</strong>
         </div>
         <div>
           <span>대표 지표</span>
-          <strong>{alert.metric}</strong>
+          <strong>{formatAlertMetricValue(alert.detected_metric_value, alert.detected_metric_name)}</strong>
+        </div>
+        <div>
+          <span>성분/상품</span>
+          <strong>{alert.product_name ? `${alert.ingredient_name} · ${alert.product_name}` : alert.ingredient_name}</strong>
+        </div>
+        <div>
+          <span>알림 상태</span>
+          <strong>{getNotificationStatus(alert)}</strong>
         </div>
       </div>
 
       <div className="detail-section">
         <h3>감지 이유</h3>
-        <ul>{alert.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+        <ul>{reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
       </div>
 
       <div className="detail-section">
-        <h3>관련 지표 요약</h3>
+        <h3>{alert.alert_type === "review_issue" ? "리뷰 이슈 지표" : "수요-공급 지표"}</h3>
         <div className="detail-metrics">
-          {Object.entries(alert.metrics).map(([label, value]) => (
+          {metricEntries.map(([label, value]) => (
             <div className="metric-pill" key={label}>
               <span>{label}</span>
               <strong>{value}</strong>
@@ -2111,9 +2233,20 @@ function AlertDetail({ alert }: { alert: AlertItem }) {
         </div>
       </div>
 
+      {relatedLowKeywordText ? (
+        <div className="detail-section">
+          <h3>상세 참고 키워드</h3>
+          <p className="detail-description">{relatedLowKeywordText}</p>
+        </div>
+      ) : null}
+
       <div className="detail-section">
         <h3>권장 액션</h3>
-        <ul>{alert.actions.map((action) => <li key={action}>{action}</li>)}</ul>
+        {actions.length ? (
+          <ul>{actions.map((action) => <li key={action}>{action}</li>)}</ul>
+        ) : (
+          <div className="empty-state api-state">권장 액션 데이터가 없습니다.</div>
+        )}
       </div>
     </div>
   );
@@ -2149,7 +2282,11 @@ export default function Dashboard() {
     status: "idle",
     error: "",
   });
-  const [activeAlertId, setActiveAlertId] = useState(dashboardData.page4.alerts[0]?.id || "");
+  const [alertState, setAlertState] = useState<{ status: ApiState; error: string }>({
+    status: "idle",
+    error: "",
+  });
+  const [activeAlertId, setActiveAlertId] = useState("");
   const [agentPrompt, setAgentPrompt] = useState("");
   const didRequestInitialData = useRef(false);
   const lastInsightRequestKey = useRef("");
@@ -2351,6 +2488,34 @@ export default function Dashboard() {
     }
   }
 
+  async function loadDailyAlerts(forceRefresh = false) {
+    setAlertState({ status: "loading", error: "" });
+
+    try {
+      const payload = await fetchLocalJson<DailyAlertsPayload>(`/api/alerts/daily${forceRefresh ? "?refresh=1" : ""}`);
+      setData((current) => mergeDailyAlerts(current, payload));
+      setActiveAlertId(payload.alerts[0]?.id || "");
+      setAlertState({ status: "ready", error: "" });
+    } catch (error) {
+      console.error("일일 경보 조회 실패", error);
+      setData((current) => mergeDailyAlerts(current, {
+        alertDate: "",
+        summary: {
+          opportunityCount: 0,
+          inventoryRiskCount: 0,
+          reviewIssueCount: 0,
+        },
+        alerts: [],
+        notificationTargets: [],
+      }));
+      setActiveAlertId("");
+      setAlertState({
+        status: "error",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   async function refreshDatalabData(periodKey = activeSearchPeriodKey) {
     await loadDashboardSignals();
     await loadIngredientTrend(periodKey);
@@ -2364,6 +2529,7 @@ export default function Dashboard() {
     void loadPriceDistribution();
     void loadMarketProducts();
     void loadDemandSupplyMatrix();
+    void loadDailyAlerts();
   }, []);
 
   useEffect(() => {
@@ -2433,7 +2599,7 @@ export default function Dashboard() {
   const leadGrowth = calculateSeriesGrowth(leadSeries, Number(selectedGrowthRate || 0));
   const leadProduct = marketProducts.find((item) => item.ingredient_label === leadIngredient);
   const marketStatus = leadProduct ? getMarketReflectionStatus(leadGrowth, leadProduct.product_count) : "공급 데이터 연결 중";
-  const activeAlert = data.page4.alerts.find((alert) => alert.id === activeAlertId) || data.page4.alerts[0];
+  const activeAlert = data.page4.alerts.find((alert) => alert.id === activeAlertId) || data.page4.alerts[0] || null;
   const statusCard = (
     <DataStatusCard
       meta={data.meta}
@@ -2454,9 +2620,8 @@ export default function Dashboard() {
     void loadIngredientTrend(activeSearchPeriodKey, "opportunity", opportunityIngredientLabels);
   }, [activeTrendIngredientSet, opportunityLabelKey]);
 
-  if (!activeAlert) return null;
-
   const isReviewAnalysisLoading = reviewAnalysisState.status === "loading";
+  const isAlertsLoading = alertState.status === "loading";
 
   return (
     <div className="dash">
@@ -2468,18 +2633,22 @@ export default function Dashboard() {
         </div>
         <div className="nav-section">
           <div className="nav-label">대시보드</div>
-          {NAV_ITEMS.map((item) => (
-            <button
-              className={`nav-item ${activeTab === item.id ? "active" : ""}`}
-              key={item.id}
-              type="button"
-              onClick={() => setActiveTab(item.id)}
-            >
-              <span className="nav-icon">{item.index}</span>
-              {item.label}
-              {item.badge ? <span className="nav-badge">{item.badge}</span> : null}
-            </button>
-          ))}
+          {NAV_ITEMS.map((item) => {
+            const badge = item.id === "D" && data.page4.alerts.length ? String(data.page4.alerts.length) : item.badge;
+
+            return (
+              <button
+                className={`nav-item ${activeTab === item.id ? "active" : ""}`}
+                key={item.id}
+                type="button"
+                onClick={() => setActiveTab(item.id)}
+              >
+                <span className="nav-icon">{item.index}</span>
+                {item.label}
+                {badge ? <span className="nav-badge">{badge}</span> : null}
+              </button>
+            );
+          })}
         </div>
         <div className="sidebar-footer">떡잎마을 방범대</div>
       </nav>
@@ -2794,16 +2963,16 @@ export default function Dashboard() {
               <PageHeader
                 badge="Page 4"
                 title="4. 경보"
-                description="시장 변화를 실시간 또는 주간 기준으로 감지하여 중요한 이슈를 알립니다."
+                description="매일 1회 갱신된 계산 결과를 기준으로 성분 기회, 재고 리스크, 리뷰 이슈를 감지합니다."
                 statusCard={statusCard}
                 compact
               />
 
               <div className="summary-strip alert-summary">
                 {[
-                  { label: "신제품 기획 후보", value: `${data.page1Summary.risingIngredientCount || 0}건`, tone: "up" },
-                  { label: "재고 리스크 성분", value: `${data.page1Summary.supplyShortageIngredientCount || 0}건`, tone: "warn" },
-                  { label: "부정 리뷰 증가", value: `${data.page4.summary.negativeReviewCount || 0}건`, tone: "down" },
+                  { label: "신제품 기회 후보", value: `${formatNumber(data.page4.summary.opportunityCount)}건`, tone: "up" },
+                  { label: "재고 리스크 성분", value: `${formatNumber(data.page4.summary.inventoryRiskCount)}건`, tone: "warn" },
+                  { label: "부정 리뷰 이슈", value: `${formatNumber(data.page4.summary.reviewIssueCount)}건`, tone: "down" },
                 ].map((item) => (
                   <div className={`summary-chip ${item.tone}`} key={item.label}>
                     <span>{item.label}</span>
@@ -2815,34 +2984,50 @@ export default function Dashboard() {
               <div className="alert-main-grid">
                 <section className="card alert-list-card">
                   <div className="card-header">
-                    <span>실시간 경보 리스트</span>
-                    <span className="card-meta">2025.04.30 ~ 2025.05.05 기준</span>
+                    <span>일일 경보 리스트</span>
+                    <span className="card-meta">
+                      {isAlertsLoading ? "alerts 계산/조회 중" : data.page4.alertDate ? `${formatAlertDate(data.page4.alertDate)} 갱신 결과` : "alerts 조회 대기"}
+                    </span>
                   </div>
                   <div className="alert-list">
-                    {data.page4.alerts.map((alert) => (
-                      <button
-                        className={`alert-item ${getSeverityClass(alert.severity)} ${alert.id === activeAlert.id ? "active" : ""}`}
-                        key={alert.id}
-                        type="button"
-                        onClick={() => setActiveAlertId(alert.id)}
-                      >
-                        <span className="alert-marker">{alert.type}</span>
-                        <span className="alert-body">
-                          <span className="alert-title-row">
-                            <strong>{alert.title}</strong>
-                            <span>{alert.time}</span>
+                    {alertState.error ? (
+                      <div className="empty-state api-state">{alertState.error}</div>
+                    ) : isAlertsLoading ? (
+                      <div className="empty-state api-state">daily_metric_snapshot과 alerts 데이터를 조회하는 중입니다.</div>
+                    ) : data.page4.alerts.length ? (
+                      data.page4.alerts.map((alert) => (
+                        <button
+                          className={`alert-item ${getSeverityClass(alert.severity)} ${activeAlert && alert.id === activeAlert.id ? "active" : ""}`}
+                          key={alert.id}
+                          type="button"
+                          onClick={() => setActiveAlertId(alert.id)}
+                        >
+                          <span className="alert-marker">{ALERT_TYPE_LABELS[alert.alert_type]}</span>
+                          <span className="alert-body">
+                            <span className="alert-title-row">
+                              <strong>{alert.title}</strong>
+                              <span>{ALERT_SEVERITY_LABELS[alert.severity]}</span>
+                            </span>
+                            <p>{alert.summary}</p>
                           </span>
-                          <p>{alert.description}</p>
-                        </span>
-                        <span className="alert-metric">{alert.metric}</span>
-                      </button>
-                    ))}
+                          <span className="alert-metric">{formatAlertMetricValue(alert.detected_metric_value, alert.detected_metric_name)}</span>
+                        </button>
+                      ))
+                    ) : (
+                      <div className="empty-state api-state">표시할 일일 경보가 없습니다.</div>
+                    )}
                   </div>
                 </section>
 
                 <aside className="card alert-detail-card">
                   <div className="card-header">경보 상세</div>
-                  <AlertDetail alert={activeAlert} />
+                  {activeAlert ? (
+                    <AlertDetail alert={activeAlert} />
+                  ) : (
+                    <div className="empty-state api-state">
+                      {alertState.error || (isAlertsLoading ? "경보 상세 데이터를 불러오는 중입니다." : "선택된 경보가 없습니다.")}
+                    </div>
+                  )}
                 </aside>
               </div>
             </div>
