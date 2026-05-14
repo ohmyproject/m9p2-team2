@@ -1,0 +1,7 @@
+{
+  "/page": "app/page.js",
+  "/api/alerts/daily/route": "app/api/alerts/daily/route.js",
+  "/api/dashboard/datalab-weekly-interest/route": "app/api/dashboard/datalab-weekly-interest/route.js",
+  "/api/dashboard/page1-insights/route": "app/api/dashboard/page1-insights/route.js",
+  "/api/review-analysis/route": "app/api/review-analysis/route.js"
+}
