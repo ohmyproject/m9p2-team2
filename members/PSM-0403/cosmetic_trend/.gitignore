@@ -1,7 +1,0 @@
-.env
-.DS_Store
-node_modules/
-*.zip
-*_preview.html
-__pycache__/
-.pytest_cache/
