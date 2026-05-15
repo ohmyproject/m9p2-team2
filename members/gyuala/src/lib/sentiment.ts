@@ -2,6 +2,10 @@ import { env, pipeline } from "@xenova/transformers";
 
 export type SentimentLabel = "positive" | "neutral" | "negative";
 
+// Transformers.js 감정 분석 유틸에서 사용하는 Hugging Face 모델입니다.
+// 현재 /api/review-analysis 화면 API는 이 모델을 호출하지 않고, src/lib/reviewAnalysis.ts의 별점+키워드 규칙을 사용합니다.
+export const HUGGING_FACE_SENTIMENT_MODEL = "Xenova/nlptown-bert-base-multilingual-uncased-sentiment";
+
 let sentimentPipeline: any = null;
 let sentimentPipelineUnavailable = false;
 
@@ -14,7 +18,7 @@ async function getSentimentPipeline() {
       env.allowLocalModels = true;
       sentimentPipeline = await pipeline(
         "sentiment-analysis",
-        "Xenova/nlptown-bert-base-multilingual-uncased-sentiment",
+        HUGGING_FACE_SENTIMENT_MODEL,
       );
     } catch (error) {
       sentimentPipelineUnavailable = true;

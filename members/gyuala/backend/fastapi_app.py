@@ -594,6 +594,9 @@ def datalab_dashboard_signals() -> JSONResponse:
     except Exception as error:
         return JSONResponse(status_code=500, content={"status": 500, "message": str(error)})
 
+@app.get("/dashboard/summary")
+def dashboard_summary() -> JSONResponse:
+    return datalab_dashboard_signals()
 
 @app.post("/api/datalab/ingredient-trend")
 def datalab_ingredient_trend(payload: dict[str, Any] = Body(default_factory=dict)) -> JSONResponse:
@@ -607,6 +610,69 @@ def datalab_ingredient_trend(payload: dict[str, Any] = Body(default_factory=dict
         return JSONResponse(content=data)
     except Exception as error:
         return JSONResponse(status_code=500, content={"status": 500, "message": str(error)})
+
+
+_sentiment_pipeline = None
+_sentiment_unavailable = False
+
+
+def _get_sentiment_pipeline():
+    global _sentiment_pipeline, _sentiment_unavailable
+    if _sentiment_unavailable:
+        return None
+    if _sentiment_pipeline is None:
+        try:
+            from transformers import pipeline as hf_pipeline
+            _sentiment_pipeline = hf_pipeline(
+                "sentiment-analysis",
+                model="nlptown/bert-base-multilingual-uncased-sentiment",
+                device=-1,
+            )
+        except Exception as exc:
+            _sentiment_unavailable = True
+            print(f"감성 분석 모델 로드 실패, fallback 사용: {exc}")
+    return _sentiment_pipeline
+
+
+def _fallback_sentiment(text: str) -> str:
+    t = text.lower()
+    pos = sum(1 for w in ["좋", "촉촉", "진정", "흡수", "산뜻", "매끈", "광채", "재구매", "만족", "편안"] if w in t)
+    neg = sum(1 for w in ["건조", "자극", "따가", "트러블", "끈적", "밀림", "무거", "답답", "붉", "가려"] if w in t)
+    if pos > neg:
+        return "positive"
+    if neg > pos:
+        return "negative"
+    return "neutral"
+
+
+def _label_to_sentiment(label: str) -> str:
+    if "1" in label or "2" in label:
+        return "negative"
+    if "4" in label or "5" in label:
+        return "positive"
+    return "neutral"
+
+
+@app.post("/sentiment")
+def analyze_sentiment(body: dict = Body(...)):
+    texts: list[str] = body.get("texts", [])
+    if not texts:
+        return {"labels": []}
+
+    classifier = _get_sentiment_pipeline()
+    if not classifier:
+        return {"labels": [_fallback_sentiment(t) for t in texts]}
+
+    try:
+        labels = []
+        for i in range(0, len(texts), 16):
+            batch = texts[i:i + 16]
+            results = classifier(batch, truncation=True, max_length=512)
+            labels.extend(_label_to_sentiment(r["label"]) for r in results)
+        return {"labels": labels}
+    except Exception as exc:
+        print(f"감성 분석 실행 실패: {exc}")
+        return {"labels": [_fallback_sentiment(t) for t in texts]}
 
 
 if __name__ == "__main__":

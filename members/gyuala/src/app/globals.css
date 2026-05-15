@@ -213,9 +213,14 @@ tbody tr:hover { background: #fbfdff; }
 .metric-pill { border: 1px solid #e2e8f0; border-radius: 10px; background: #fff; padding: 10px; display: grid; gap: 5px; }
 .metric-pill strong { color: #095fe9; font-size: 14px; }
 .agent-page-layout { max-width: none; }
+.agent-top-grid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(320px, .9fr); gap: 18px; align-items: stretch; margin-bottom: 18px; }
+.agent-equal-card { min-height: 150px; height: 100%; }
+.agent-input-card.agent-equal-card, .suggestion-card.agent-equal-card { display: flex; flex-direction: column; justify-content: center; }
+.suggestion-card .card-header { margin-bottom: 14px; }
 .agent-main-grid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(320px, .9fr); gap: 18px; align-items: start; }
 .agent-left-column, .agent-side-column { display: grid; gap: 14px; }
 .agent-shell { margin-bottom: 14px; }
+.plan-download-button { margin-top: 14px; width: 100%; min-height: 48px; border-radius: 12px; font-size: 14px; }
 .agent-input-card { background: #fff; border: 1px solid #dfe6f2; border-radius: 14px; padding: 16px 18px; }
 .agent-input-card label { display: block; font-size: 13px; color: #0f1f48; font-weight: 900; margin-bottom: 10px; }
 .agent-input-help { color: #53627a; font-size: 12px; line-height: 1.55; margin: -4px 0 12px; }
@@ -223,6 +228,9 @@ tbody tr:hover { background: #fbfdff; }
 .agent-input-row input { min-height: 42px; border-radius: 10px; border: 1px solid #dbe2ea; padding: 0 14px; color: #0f1f48; outline: none; }
 .agent-input-row input:focus { border-color: #93c5fd; box-shadow: 0 0 0 3px rgba(147,197,253,.25); }
 .agent-send-button { min-height: 42px; border-radius: 10px; padding: 0; font-size: 14px; }
+.agent-send-button:disabled { opacity: 0.5; cursor: not-allowed; }
+.agent-input-row input:disabled { background: #f5f7fa; cursor: not-allowed; }
+.agent-error { color: #b91c1c; font-size: 12px; margin-top: 8px; }
 .recommendation-grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
 .recommendation-card { border: 1px solid #dfe6f2; border-radius: 12px; background: #fbfdff; padding: 16px; display: grid; gap: 12px; }
 .recommendation-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
@@ -250,7 +258,7 @@ tbody tr:hover { background: #fbfdff; }
   .page-header { flex-direction: column; }
   .page-header-actions { justify-content: flex-start; max-width: none; }
   .summary-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .market-grid, .search-grid, .review-grid, .alert-main-grid, .agent-main-grid { grid-template-columns: 1fr; }
+  .market-grid, .search-grid, .review-grid, .alert-main-grid, .agent-main-grid, .agent-top-grid { grid-template-columns: 1fr; }
   .market-matrix-card, .market-insight-card, .trend-card, .market-products-card, .selected-summary-card, .concern-card, .age-card, .search-insight-card, .skin-table-card, .review-insight-card { grid-column: auto; }
   .compact-page-layout, .agent-page-layout { max-width: none; }
 }
