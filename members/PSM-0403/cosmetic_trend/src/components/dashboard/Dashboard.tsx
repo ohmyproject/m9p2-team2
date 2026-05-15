@@ -46,11 +46,25 @@ type DataLoadState = {
   priceDistribution: ApiState;
   demandSupplyMatrix: ApiState;
   page1Insights: ApiState;
+  page2Insights: ApiState;
   dashboardSignalsError: string;
   searchTrendError: string;
   priceDistributionError: string;
   demandSupplyMatrixError: string;
   page1InsightsError: string;
+  page2InsightsError: string;
+};
+
+type AgentResult = {
+  title: string;
+  level: string;
+  summary: string;
+  evidence: string;
+  strategy: string;
+  targetTitle: string;
+  issues: string[];
+  directions: string[];
+  actions: string[];
 };
 
 type DashboardSignalsPayload = Omit<Partial<DashboardData>, "page1" | "page2" | "page1Summary"> & {
@@ -552,6 +566,49 @@ function mergePage1Insights(current: DashboardData, insights: string[]) {
     page1: {
       ...current.page1,
       insights,
+    },
+  } satisfies DashboardData;
+}
+
+function mergePage2Insights(current: DashboardData, insights: string[]) {
+  return {
+    ...current,
+    page2: {
+      ...current.page2,
+      insights,
+    },
+  } satisfies DashboardData;
+}
+
+function buildPage2InsightPayload(data: DashboardData, marketProducts: MarketProduct[]) {
+  return {
+    searchTrend: data.page2.searchTrend,
+    concernMetrics: data.page2.concernMetrics,
+    concernTable: data.page2.concernTable,
+    marketProducts,
+  };
+}
+
+function mergeAgentResult(current: DashboardData, result: AgentResult): DashboardData {
+  const newInsight = {
+    id: `agent-${Date.now()}`,
+    title: result.title,
+    level: result.level,
+    summary: result.summary,
+    evidence: result.evidence,
+    strategy: result.strategy,
+  };
+  return {
+    ...current,
+    page5: {
+      ...current.page5,
+      insights: [newInsight, ...current.page5.insights].slice(0, 5),
+      targetStrategy: {
+        title: result.targetTitle,
+        issues: result.issues,
+        directions: result.directions,
+        actions: result.actions,
+      },
     },
   } satisfies DashboardData;
 }
@@ -2260,11 +2317,13 @@ export default function Dashboard() {
     priceDistribution: "loading",
     demandSupplyMatrix: "loading",
     page1Insights: "loading",
+    page2Insights: "idle",
     dashboardSignalsError: "",
     searchTrendError: "",
     priceDistributionError: "",
     demandSupplyMatrixError: "",
     page1InsightsError: "",
+    page2InsightsError: "",
   });
   const [activeTab, setActiveTab] = useState<TabId>("A");
   const [activePriceType, setActivePriceType] = useState<PriceType>("sale");
@@ -2288,8 +2347,13 @@ export default function Dashboard() {
   });
   const [activeAlertId, setActiveAlertId] = useState("");
   const [agentPrompt, setAgentPrompt] = useState("");
+  const [agentState, setAgentState] = useState<{ status: ApiState; error: string }>({
+    status: "idle",
+    error: "",
+  });
   const didRequestInitialData = useRef(false);
   const lastInsightRequestKey = useRef("");
+  const lastPage2InsightRequestKey = useRef("");
 
   async function loadDashboardSignals() {
     setLoadState((current) => ({ ...current, dashboardSignals: "loading", dashboardSignalsError: "" }));
@@ -2334,7 +2398,7 @@ export default function Dashboard() {
     ingredientSet: TrendIngredientSet = activeTrendIngredientSet,
     ingredientLabels = getTrendIngredientLabels(ingredientSet, data.page1.demandSupplyMatrix),
   ) {
-    setLoadState((current) => ({ ...current, searchTrend: "loading", searchTrendError: "" }));
+    setLoadState((current) => ({ ...current, searchTrend: "loading", searchTrendError: "", page2Insights: "idle" }));
     try {
       const params = new URLSearchParams({
         scope: "page2",
@@ -2456,18 +2520,37 @@ export default function Dashboard() {
         throw new Error(typeof result.error === "string" ? result.error : INSIGHT_GENERATION_ERROR_MESSAGE);
       }
 
-      const generatedInsights = result.insights.map((item: unknown) => String(item)).filter(Boolean);
-      const decisionInsights = ensureDashboardInsights(generatedInsights, buildPage1DecisionInsights(payload));
-      setData((current) => mergePage1Insights(current, decisionInsights));
+      const aiInsights = result.insights.map((item: unknown) => String(item)).filter(Boolean);
+      setData((current) => mergePage1Insights(current, aiInsights));
       setLoadState((current) => ({ ...current, page1Insights: "ready", page1InsightsError: "" }));
     } catch (error) {
-      console.error("OpenAI Page 1 인사이트 요약 생성 실패", error);
+      console.error("Page 1 인사이트 생성 실패", error);
       setData((current) => mergePage1Insights(current, buildPage1DecisionInsights(payload)));
-      setLoadState((current) => ({
-        ...current,
-        page1Insights: "ready",
-        page1InsightsError: "",
-      }));
+      setLoadState((current) => ({ ...current, page1Insights: "ready", page1InsightsError: "" }));
+    }
+  }
+
+  async function loadPage2Insights(payload: ReturnType<typeof buildPage2InsightPayload>) {
+    setLoadState((current) => ({ ...current, page2Insights: "loading", page2InsightsError: "" }));
+
+    try {
+      const response = await fetch("/api/dashboard/page2-insights", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const result = await response.json().catch(() => ({}));
+
+      if (!response.ok || !Array.isArray(result.insights)) {
+        throw new Error(typeof result.error === "string" ? result.error : INSIGHT_GENERATION_ERROR_MESSAGE);
+      }
+
+      const aiInsights = result.insights.map((item: unknown) => String(item)).filter(Boolean);
+      setData((current) => mergePage2Insights(current, aiInsights));
+      setLoadState((current) => ({ ...current, page2Insights: "ready", page2InsightsError: "" }));
+    } catch (error) {
+      console.error("Page 2 인사이트 생성 실패", error);
+      setLoadState((current) => ({ ...current, page2Insights: "ready", page2InsightsError: "" }));
     }
   }
 
@@ -2512,6 +2595,39 @@ export default function Dashboard() {
       setAlertState({
         status: "error",
         error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  async function callAgent() {
+    const question = agentPrompt.trim();
+    if (!question || agentState.status === "loading") return;
+
+    setAgentState({ status: "loading", error: "" });
+
+    try {
+      const context = {
+        functionTop5: data.page1.functionRisers.slice(0, 5),
+        ingredientTop5: data.page1.ingredientPopularity.slice(0, 5),
+        searchTrend: data.page2.searchTrend,
+        concernTable: data.page2.concernTable.slice(0, 10),
+        marketProducts: data.page2.marketProducts.slice(0, 10),
+        reviewData: reviewAnalysis,
+      };
+
+      const result = await fetchLocalJson<AgentResult>("/api/dashboard/page5-agent", {
+        method: "POST",
+        body: JSON.stringify({ question, context }),
+      });
+
+      setData((current) => mergeAgentResult(current, result));
+      setAgentState({ status: "ready", error: "" });
+      setAgentPrompt("");
+    } catch (error) {
+      console.error("AI Agent 호출 실패", error);
+      setAgentState({
+        status: "error",
+        error: error instanceof Error ? error.message : "전략 생성에 실패했습니다.",
       });
     }
   }
@@ -2562,11 +2678,32 @@ export default function Dashboard() {
     loadState.demandSupplyMatrixError,
   ]);
 
+  useEffect(() => {
+    const stillLoading = loadState.searchTrend === "loading" || loadState.dashboardSignals === "loading";
+    if (stillLoading || loadState.page2Insights !== "idle") return;
+    if (!data.page2.searchTrend.series.length && !data.page2.concernTable.length) return;
+
+    const payload = buildPage2InsightPayload(data, data.page2.marketProducts.slice().sort((a, b) => b.product_count - a.product_count));
+    const requestKey = JSON.stringify(payload);
+    if (requestKey === lastPage2InsightRequestKey.current) return;
+
+    lastPage2InsightRequestKey.current = requestKey;
+    void loadPage2Insights(payload);
+  }, [
+    data.page2.searchTrend,
+    data.page2.concernTable,
+    data.page2.marketProducts,
+    loadState.searchTrend,
+    loadState.dashboardSignals,
+    loadState.page2Insights,
+  ]);
+
   const isDashboardLoading = loadState.dashboardSignals === "loading";
   const isTrendLoading = loadState.searchTrend === "loading";
   const isPriceLoading = loadState.priceDistribution === "loading";
   const isDemandSupplyLoading = loadState.demandSupplyMatrix === "loading";
   const isPage1InsightsLoading = loadState.page1Insights === "loading";
+  const isPage2InsightsLoading = loadState.page2Insights === "loading";
   const marketProducts = useMemo(
     () => data.page2.marketProducts.slice().sort((a, b) => b.product_count - a.product_count),
     [data.page2.marketProducts],
@@ -2881,8 +3018,8 @@ export default function Dashboard() {
                 </div>
                 <p className="card-helper">검색 관심도, 제품 수, 피부 고민 집중도를 함께 읽어 핵심 해석을 요약합니다.</p>
                 <InsightList
-                  items={page2DecisionInsights}
-                  fallback={loadState.dashboardSignalsError ? `FastAPI 오류: ${loadState.dashboardSignalsError}` : "Naver DataLab API에서 검색 트렌드 인사이트를 불러오는 중입니다."}
+                  items={data.page2.insights.length ? data.page2.insights : page2DecisionInsights}
+                  fallback={isPage2InsightsLoading ? "인사이트를 생성 중입니다." : loadState.dashboardSignalsError ? `FastAPI 오류: ${loadState.dashboardSignalsError}` : "Naver DataLab API에서 검색 트렌드 인사이트를 불러오는 중입니다."}
                 />
               </section>
             </div>
@@ -3043,32 +3180,48 @@ export default function Dashboard() {
                 compact
               />
 
+              <div className="agent-top-grid">
+                <div className="agent-input-card agent-equal-card">
+                  <label htmlFor="agentPrompt">무엇을 도와드릴까요?</label>
+                  <p className="agent-input-help">이번 주 성분 신호와 리뷰 이슈를 바탕으로 바로 실행할 전략을 물어보세요.</p>
+                  <div className="agent-input-row">
+                    <input
+                      id="agentPrompt"
+                      type="text"
+                      placeholder={data.page5.promptPlaceholder}
+                      value={agentPrompt}
+                      onChange={(event) => setAgentPrompt(event.target.value)}
+                      onKeyDown={(event) => { if (event.key === "Enter") void callAgent(); }}
+                      disabled={agentState.status === "loading"}
+                    />
+                    <button
+                      className="btn btn-primary agent-send-button"
+                      type="button"
+                      aria-label="전략 제안 받기"
+                      onClick={() => void callAgent()}
+                      disabled={agentState.status === "loading" || !agentPrompt.trim()}
+                    >
+                      {agentState.status === "loading" ? "…" : "➤"}
+                    </button>
+                  </div>
+                  {agentState.status === "error" && (
+                    <p className="agent-error">{agentState.error}</p>
+                  )}
+                </div>
+                <div className="card suggestion-card agent-equal-card">
+                  <div className="card-header">추천 질문</div>
+                  <div className="suggestion-list">
+                    {data.page5.suggestions.map((suggestion) => (
+                      <button className="question-chip" type="button" key={suggestion} onClick={() => setAgentPrompt(suggestion)}>
+                        {suggestion}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
               <div className="agent-main-grid">
                 <section className="agent-left-column">
-                  <div className="agent-shell">
-                    <div className="agent-input-card">
-                      <label htmlFor="agentPrompt">무엇을 도와드릴까요?</label>
-                      <p className="agent-input-help">이번 주 성분 신호와 리뷰 이슈를 바탕으로 바로 실행할 전략을 물어보세요.</p>
-                      <div className="agent-input-row">
-                        <input
-                          id="agentPrompt"
-                          type="text"
-                          placeholder={data.page5.promptPlaceholder}
-                          value={agentPrompt}
-                          onChange={(event) => setAgentPrompt(event.target.value)}
-                        />
-                        <button
-                          className="btn btn-primary agent-send-button"
-                          type="button"
-                          aria-label="전략 제안 받기"
-                          onClick={() => window.alert("AI Agent 전략 제안 요청")}
-                        >
-                          ➤
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-
                   <section className="card">
                     <div className="card-header">
                       <span>AI 추천 인사이트</span>
@@ -3092,7 +3245,6 @@ export default function Dashboard() {
                               <strong>{item.strategy}</strong>
                             </div>
                           </div>
-                          <button className="btn btn-outline strategy-button" type="button">전략 상세 보기</button>
                         </article>
                       ))}
                     </div>
@@ -3101,17 +3253,6 @@ export default function Dashboard() {
 
                 <aside className="agent-side-column">
                   <section className="card">
-                    <div className="card-header">추천 질문</div>
-                    <div className="suggestion-list">
-                      {data.page5.suggestions.map((suggestion) => (
-                        <button className="question-chip" type="button" key={suggestion} onClick={() => setAgentPrompt(suggestion)}>
-                          {suggestion}
-                        </button>
-                      ))}
-                    </div>
-                  </section>
-
-                  <section className="card target-strategy-card">
                     <div className="card-header">타겟 전략 카드</div>
                     <div className="target-strategy">
                       <h2>{data.page5.targetStrategy.title}</h2>

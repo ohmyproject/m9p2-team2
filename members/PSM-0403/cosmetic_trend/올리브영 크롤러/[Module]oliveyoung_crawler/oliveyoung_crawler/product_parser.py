@@ -10,6 +10,28 @@ from bs4 import BeautifulSoup
 from .common import clean_text, ensure_absolute_oliveyoung_url
 
 
+# 단위 우선순위: ml > g > L > oz > 매/장/개/정
+_VOLUME_PATTERNS = [
+    re.compile(r'\d+(?:[.,]\d+)?\s*(?:ml|mL|ML|㎖)', re.UNICODE),
+    re.compile(r'\d+(?:[.,]\d+)?\s*g(?![a-zA-Z가-힣])', re.UNICODE),
+    re.compile(r'\d+(?:[.,]\d+)?\s*[Ll](?![a-zA-Z가-힣])', re.UNICODE),
+    re.compile(r'\d+(?:[.,]\d+)?\s*(?:oz|OZ)', re.UNICODE),
+    re.compile(r'\d+\s*(?:매|장|정)', re.UNICODE),
+]
+
+
+def extract_volume_from_text(text: str) -> str:
+    """텍스트에서 용량을 추출합니다. 상품명·제공고시·상세페이지 텍스트 모두에 사용합니다."""
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", str(text)).strip()
+    for pattern in _VOLUME_PATTERNS:
+        m = pattern.search(text)
+        if m:
+            return re.sub(r"\s+", "", m.group(0))
+    return ""
+
+
 # ============================================================
 # product_parser.py
 # ------------------------------------------------------------
@@ -39,6 +61,22 @@ NOTICE_FIELD_ALIASES = {
     "소비자상담 전화번호": "소비자상담전화번호",
 }
 
+_CROP_URL_RE = re.compile(r"/crop\d+/(image\.oliveyoung\.co\.kr/.+?)(?:\?|$)")
+
+
+def normalize_detail_image_url(url: str) -> str:
+    """
+    /html/crop/.../cropN/image.oliveyoung.co.kr/... 형태의 URL을 원본으로 복원합니다.
+    crop0~cropN은 동일 이미지를 세로로 분할한 것이므로 원본 1장으로 통일합니다.
+    """
+    m = _CROP_URL_RE.search(url)
+    if m:
+        return "https://" + m.group(1)
+    if "oliveyoung.co.kr" in url:
+        return url.split("?")[0]
+    return url
+
+
 DETAIL_IMAGE_SELECTORS = [
     "#goodsDetailContent img",
     "#goodsDetailInfo img",
@@ -52,57 +90,6 @@ DETAIL_IMAGE_SELECTORS = [
     "[class*='Description'] img",
     "[class*='detail'] img",
 ]
-
-PRODUCT_DEDUPE_WORDS = [
-    "단독기획",
-    "한정기획",
-    "더블기획",
-    "듀오기획",
-    "리필기획",
-    "대용량기획",
-    "기획",
-    "더블",
-    "듀오",
-    "리필팩",
-    "리필",
-    "본품",
-    "증정",
-    "대용량",
-    "리뉴얼",
-    "NEW",
-    "new",
-]
-
-
-def normalize_product_dedupe_key(product_name: str, brand: str = "") -> str:
-    """
-    용량/기획 구성만 다른 같은 상품을 하나로 묶기 위한 비교 키를 만듭니다.
-
-    예:
-    [트러블모공] 디오디너리 나이아신아마이드 10% + 징크 1% 30ml
-    [트러블모공] 디오디너리 나이아신아마이드 10% + 징크 1% 60ml
-    -> 같은 키
-    """
-    text = clean_text(product_name).lower()
-    brand_text = clean_text(brand).lower()
-
-    if not text:
-        return ""
-
-    text = re.sub(r"\[[^\]]*\]", " ", text)
-    text = re.sub(r"\([^)]*\)", " ", text)
-    text = re.sub(r"\d+(?:\.\d+)?\s*(?:ml|mL|ML|g|G)\b", " ", text)
-    text = re.sub(r"\d+\s*(?:매입|매|개입|개|입|종|병)\b", " ", text)
-    text = re.sub(r"\b\d+\s*\+\s*\d+\b", " ", text)
-
-    for word in PRODUCT_DEDUPE_WORDS:
-        text = re.sub(re.escape(word.lower()), " ", text)
-
-    text = re.sub(r"[^0-9a-z가-힣%+]+", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    brand_text = re.sub(r"[^0-9a-z가-힣]+", "", brand_text)
-
-    return f"{brand_text}:{text}" if brand_text else text
 
 
 def with_page(url: str, page: int) -> str:
@@ -227,7 +214,7 @@ def extract_detail_image_urls(soup: BeautifulSoup) -> list[str]:
 
     for selector in DETAIL_IMAGE_SELECTORS:
         for image_tag in soup.select(selector):
-            image_url = image_url_from_tag(image_tag)
+            image_url = normalize_detail_image_url(image_url_from_tag(image_tag))
 
             if not image_url or image_url in seen_urls:
                 continue
@@ -242,7 +229,7 @@ def extract_detail_image_urls(soup: BeautifulSoup) -> list[str]:
         return image_urls
 
     for image_tag in soup.find_all("img"):
-        image_url = image_url_from_tag(image_tag)
+        image_url = normalize_detail_image_url(image_url_from_tag(image_tag))
 
         if not image_url or image_url in seen_urls:
             continue
@@ -363,21 +350,12 @@ def parse_product_cards(
         if not product_key:
             product_key = link
 
-        brand_name = brand_tag.get_text(strip=True) if brand_tag else ""
-        product_name = name_tag.get_text(strip=True) if name_tag else ""
-        dedupe_name_key = normalize_product_dedupe_key(product_name, brand_name)
-        seen_keys = [
-            f"goods:{product_key}" if product_key else "",
-            f"name:{dedupe_name_key}" if dedupe_name_key else "",
-        ]
-
         # 같은 상품 중복 수집 방지
-        if any(key and key in seen_product_keys for key in seen_keys):
+        if product_key and product_key in seen_product_keys:
             continue
 
-        for key in seen_keys:
-            if key:
-                seen_product_keys.add(key)
+        if product_key:
+            seen_product_keys.add(product_key)
 
         list_price = (
             clean_text(price_org_tag.get_text(strip=True)).replace(",", "")
@@ -410,8 +388,8 @@ def parse_product_cards(
                 "중카테고리": middle_category,
                 "카테고리": f"{major_category} > {middle_category}",
                 "상품번호": product_key,
-                "브랜드": brand_name,
-                "상품명": product_name,
+                "브랜드": brand_tag.get_text(strip=True) if brand_tag else "",
+                "상품명": name_tag.get_text(strip=True) if name_tag else "",
                 "정가": list_price,
                 "할인가": sale_price,
                 "할인율": discount_rate,
@@ -473,6 +451,12 @@ def build_detail_dict(soup: BeautifulSoup) -> dict[str, str]:
     for key, value in notice_table.items():
         if key in NOTICE_FIELD_ALIASES.values():
             detail[key] = value
+
+    # 용량: 제공고시 값에 정규식 적용 → 없으면 전체 텍스트에서 재시도
+    volume = extract_volume_from_text(detail.get("용량", ""))
+    if not volume:
+        volume = extract_volume_from_text(soup.get_text(" ", strip=True))
+    detail["용량"] = volume
 
     detail["상세정보_JSON"] = json.dumps(notice_table, ensure_ascii=False)
 

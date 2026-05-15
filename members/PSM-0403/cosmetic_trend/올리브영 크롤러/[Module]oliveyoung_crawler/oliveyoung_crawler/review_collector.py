@@ -63,7 +63,6 @@ window.scrollBy(0, arguments[0] || 1200);
 return window.scrollY;
 """
 
-
 EXTRACT_REVIEWS_JS = """
 const s1 = document.querySelector('oy-review-review-in-product')?.shadowRoot;
 const s2 = s1?.querySelector('oy-review-review-list')?.shadowRoot;
@@ -202,9 +201,13 @@ return {action: 'scroll', scrollY: window.scrollY, itemCount: items.length};
 """
 
 REVIEW_OUTPUT_COLUMNS = [
+    "date",
+    "platform",
+    "sort_type",
+    "main_ingredients",
     "product_name",
-    "review_rating",
     "review_count",
+    "review_rating",
     "skin_type",
     "review_text",
     "url",
@@ -321,6 +324,7 @@ def merge_raw_reviews(
 def normalize_review_row(
     product: dict[str, str],
     raw_review: dict[str, Any],
+    today: str,
 ) -> dict[str, str]:
     """
     JS로 추출한 리뷰 데이터를 요청받은 리뷰 CSV 스키마에 맞게 변환합니다.
@@ -328,23 +332,31 @@ def normalize_review_row(
     content = clean_text(raw_review.get("content"))
 
     return {
+        "date": today,
+        "platform": "oliveyoung",
+        "sort_type": clean_text(product.get("sort_type", "")),
+        "main_ingredients": clean_text(product.get("main_ingredients", "")),
         "product_name": product_value(product, "product_name", "상품명"),
-        "review_rating": raw_review.get("stars", ""),
         "review_count": product_value(product, "review_count", "전체리뷰수"),
+        "review_rating": raw_review.get("stars", ""),
         "skin_type": normalize_skin_type(raw_review.get("skinTypes")),
         "review_text": content,
         "url": product_value(product, "url", "상품링크"),
     }
 
 
-def failed_review_row(product: dict[str, str], error_code: str) -> dict[str, str]:
+def failed_review_row(product: dict[str, str], error_code: str, today: str) -> dict[str, str]:
     """
     리뷰 수집 실패 시에도 상품 행을 버리지 않고 실패 사유를 review_text에 저장합니다.
     """
     return {
+        "date": today,
+        "platform": "oliveyoung",
+        "sort_type": clean_text(product.get("sort_type", "")),
+        "main_ingredients": clean_text(product.get("main_ingredients", "")),
         "product_name": product_value(product, "product_name", "상품명"),
-        "review_rating": "",
         "review_count": product_value(product, "review_count", "전체리뷰수"),
+        "review_rating": "",
         "skin_type": "없음",
         "review_text": f"리뷰 수집 실패: {error_code}",
         "url": product_value(product, "url", "상품링크"),
@@ -357,6 +369,7 @@ def collect_reviews_for_product(
     *,
     limit: int,
     access_check_timeout_seconds: int,
+    today: str,
 ) -> list[dict[str, str]]:
     """
     상품 1개에 대해 리뷰를 수집합니다.
@@ -374,7 +387,7 @@ def collect_reviews_for_product(
     )
 
     if not product_url:
-        return [failed_review_row(product, "missing_product_url")]
+        return [failed_review_row(product, "missing_product_url", today)]
 
     if target_limit <= 0:
         print("  [리뷰 없음] 0건")
@@ -401,7 +414,7 @@ def collect_reviews_for_product(
 
         if not clicked:
             print("  [리뷰 실패] 리뷰 탭 클릭 실패")
-            return [failed_review_row(product, "review_tab_not_clicked")]
+            return [failed_review_row(product, "review_tab_not_clicked", today)]
 
         time.sleep(2)
 
@@ -452,12 +465,12 @@ def collect_reviews_for_product(
 
         if not raw_reviews:
             print("  [리뷰 실패] 리뷰 컴포넌트 또는 리뷰 아이템 미확인")
-            return [failed_review_row(product, "review_component_or_items_not_loaded")]
+            return [failed_review_row(product, "review_component_or_items_not_loaded", today)]
 
         result: list[dict[str, str]] = []
 
         for raw_review in raw_reviews[:target_limit]:
-            result.append(normalize_review_row(product, raw_review))
+            result.append(normalize_review_row(product, raw_review, today))
 
         if len(result) < target_limit:
             print(f"  [리뷰 일부 성공] {len(result)}/{target_limit}건")
@@ -468,7 +481,7 @@ def collect_reviews_for_product(
 
     except Exception as error:
         print(f"  [리뷰 예외] {str(error)[:120]}")
-        return [failed_review_row(product, f"exception:{str(error)[:80]}")]
+        return [failed_review_row(product, f"exception:{str(error)[:80]}", today)]
 
 
 def run(config: ReviewCrawlConfig) -> Path | None:
@@ -482,6 +495,7 @@ def run(config: ReviewCrawlConfig) -> Path | None:
     4. 리뷰 CSV 저장
     5. 브라우저 종료
     """
+    from datetime import date as _date
 
     product_rows = read_product_rows(config.product_csv)
 
@@ -489,6 +503,7 @@ def run(config: ReviewCrawlConfig) -> Path | None:
         print("[리뷰] 상품 CSV에 데이터가 없습니다.")
         return None
 
+    today = _date.today().strftime("%Y-%m-%d")
     suffix = suffix_from_product_csv(config.product_csv, fallback=config.sorts)
 
     save_path = make_output_path(config.output_dir, "Review", suffix)
@@ -509,16 +524,12 @@ def run(config: ReviewCrawlConfig) -> Path | None:
                 product,
                 limit=config.reviews_per_product,
                 access_check_timeout_seconds=config.access_check_timeout_seconds,
+                today=today,
             )
 
             all_review_rows.extend(rows)
-
-            if (
-                config.interim_save_interval > 0
-                and index % config.interim_save_interval == 0
-            ):
-                save_review_rows(all_review_rows, save_path)
-                print(f"[리뷰 CSV 중간 저장] {save_path} ({index}개 상품)")
+            save_review_rows(all_review_rows, save_path)
+            print(f"[리뷰 CSV 저장] {index}/{len(product_rows)}개 상품 → {save_path.name}")
 
     finally:
         safe_quit_driver(driver)

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
+import tempfile
 import time
 from pathlib import Path
 
@@ -13,16 +15,11 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 from .browser import create_driver, safe_quit_driver, wait_for_oliveyoung_access
 from .category import select_category
-from .common import (
-    clean_text,
-    make_output_path,
-    now_iso,
-    parse_sorts,
-    parse_volume_package,
-)
+from .common import clean_text, make_output_path, now_iso, parse_sorts
 from .config import ProductCrawlConfig, ROOT_DIR
 from .product_parser import (
     build_detail_dict,
+    extract_volume_from_text,
     parse_product_cards,
     with_page,
     with_sort,
@@ -65,6 +62,44 @@ PRODUCT_INFO_COLUMNS = [
 OPENAI_ENV_LOADED = False
 OPENAI_KEY_WARNED = False
 OPENAI_CALL_WARNED = False
+
+EXTRACT_DETAIL_IMAGE_URLS_JS = """
+const selectors = [
+    '.contEditor img',
+    '#tempHtml2 img',
+    '#goodsDetailContent img',
+    '#goodsDetailInfo img',
+    '.goods_detail_box img',
+    '.prd_detail_box img',
+    '.prd_detail img',
+    '.detail_info_area img',
+    '[class*="GoodsDetail"] img',
+    '[class*="Description"] img',
+    '[class*="detail"] img',
+    '.speedycat-container img',
+];
+
+// lazy 이미지 강제 로드
+document.querySelectorAll('img[data-src], img[data-original]').forEach(img => {
+    if (img.getAttribute('data-src')) img.src = img.getAttribute('data-src');
+    if (img.getAttribute('data-original')) img.src = img.getAttribute('data-original');
+});
+
+const seen = new Set();
+const urls = [];
+
+for (const selector of selectors) {
+    for (const img of document.querySelectorAll(selector)) {
+        const url = img.currentSrc || img.src || img.getAttribute('data-src') || img.getAttribute('data-original') || '';
+        if (url && !url.startsWith('data:') && url.includes('oliveyoung.co.kr') && !seen.has(url)) {
+            seen.add(url);
+            urls.push(url);
+        }
+    }
+}
+
+return urls;
+"""
 
 LOAD_DETAIL_IMAGES_JS = """
 const clickable = Array.from(document.querySelectorAll('button,a,[role="button"]'));
@@ -137,7 +172,10 @@ def load_openai_env() -> None:
 
 def clean_main_ingredients_response(value) -> str:
     """
-    GPT 응답을 CSV에 넣기 좋은 1줄 성분 목록으로 정리합니다.
+    GPT JSON 응답을 CSV에 넣기 좋은 1줄 성분 요약으로 정리합니다.
+
+    형식: "Cica(Centella Asiatica Extract, Madecassoside), Hyaluronic Acid(Sodium Hyaluronate)"
+    JSON 파싱 실패 시 원문 텍스트를 그대로 반환합니다.
     """
     text = clean_text(value)
 
@@ -146,10 +184,31 @@ def clean_main_ingredients_response(value) -> str:
 
     text = text.strip("`\"' ")
 
-    if text in {"없음", "확인불가", "확인 불가", "N/A", "n/a"}:
-        return ""
+    # 마크다운 코드블록 제거
+    if text.startswith("```"):
+        text = text.split("```")[1]
+        if text.startswith("json"):
+            text = text[4:]
+        text = text.strip()
 
-    return text
+    try:
+        data = json.loads(text)
+        items = data.get("representative_ingredients", [])
+        parts = []
+        for item in items:
+            name = item.get("대표성분명", "").strip()
+            inci_list = [i.strip() for i in item.get("INCI_성분", []) if i.strip()]
+            if not name:
+                continue
+            if inci_list:
+                parts.append(f"{name}({', '.join(inci_list)})")
+            else:
+                parts.append(name)
+        return ", ".join(parts)
+    except Exception:
+        if text in {"없음", "확인불가", "확인 불가", "N/A", "n/a"}:
+            return ""
+        return text
 
 
 def parse_detail_image_urls(value) -> list[str]:
@@ -189,7 +248,7 @@ def extract_main_ingredients_with_gpt_ocr(
     global OPENAI_KEY_WARNED, OPENAI_CALL_WARNED
 
     image_urls = [clean_text(url) for url in image_urls if clean_text(url)]
-    image_urls = image_urls[:4]
+    image_urls = [url.split("?")[0] if "oliveyoung.co.kr" in url else url for url in image_urls]
 
     if not image_urls:
         return ""
@@ -210,50 +269,97 @@ def extract_main_ingredients_with_gpt_ocr(
             OPENAI_CALL_WARNED = True
         return ""
 
+    import requests
+
     prompt = (
-        "아래 이미지는 올리브영 상품 상세설명에 포함된 이미지입니다. "
-        "이미지 속 문구를 OCR로 읽고, 화장품 주요 성분으로 보이는 항목을 "
-        "중요도 순서로 최대 3개까지만 골라주세요. "
-        "확실한 주요 성분이 1개면 1개만, 2개면 2개만 답하세요. "
-        "개수를 맞추기 위해 성분을 추측하거나 3개까지 채우지 마세요. "
-        "전성분표 전체가 아니라 상품설명 이미지에서 강조된 핵심 성분만 선택하세요. "
-        "반드시 한글 성분명으로만 답하고, 설명 없이 쉼표로 구분하세요. "
-        "영문 약어가 이미지에 크게 표시된 경우에도 가능한 한 통용되는 한글명으로 바꿔주세요. "
-        "이미지에서 주요 성분을 확인할 수 없으면 빈 문자열만 출력하세요.\n\n"
-        f"제품명: {clean_text(product_name)}\n"
-        f"HTML 전성분 참고값: {clean_text(ingredients_text)[:1200]}"
+        "너는 화장품 성분 분석 전문가이다.\n\n"
+        "목표:\n"
+        "화장품 홍보 이미지에서 제품이 강조하는 \"대표 성분명\"을 찾고,\n"
+        "그 대표 성분을 구성하는 실제 화장품 성분을 전성분 목록에서 찾아 INCI 명칭으로 정리한다.\n\n"
+        "작업 절차:\n"
+        "1. 홍보 이미지의 문구에서 제품이 강조하는 성분 표현을 찾는다.\n"
+        "   - 예: 시카, 병풀, 히알루론산, 저분자 히알루론산, 세라마이드, PDRN, 엑소좀, 레티놀,\n"
+        "         바쿠치올, 나이아신아마이드, 펩타이드, 콜라겐, 비타민C, PHA, AHA, BHA 등\n"
+        "2. 이 표현을 업계에서 흔히 쓰는 대표 성분명으로 정리한다.\n"
+        "   - 예: 병풀 → Cica / 히알루론산 → Hyaluronic Acid / 세라마이드 → Ceramide\n"
+        "3. 아래 제공된 전성분 목록에서 해당 대표 성분을 구성하는 실제 성분만 찾는다.\n"
+        "4. 찾은 성분은 반드시 INCI 명칭으로 작성한다.\n"
+        "5. 전성분 목록에 없는 성분은 추측해서 넣지 않는다.\n"
+        "6. 홍보 이미지에 강조되어 있지 않은 성분은 전성분에 있더라도 대표 성분으로 뽑지 않는다.\n"
+        "7. 성분 개수를 억지로 채우지 않는다.\n"
+        "8. OCR 오류가 의심되는 경우, 전성분 문맥상 확실히 보정 가능한 경우에만 보정한다.\n"
+        "9. 확실하지 않으면 not_found_or_uncertain에 기록한다.\n\n"
+        "중요 규칙:\n"
+        "- 대표 성분명은 소비자와 업계에서 통용되는 마케팅 명칭으로 작성한다.\n"
+        "- INCI 명칭은 전성분에서 확인 가능한 실제 성분명만 작성한다.\n"
+        "- \"시카 콤플렉스\", \"수분 콤플렉스\", \"탄력 콤플렉스\"처럼 복합 명칭이 있는 경우,\n"
+        "  전성분에서 그 복합 성분을 구성할 가능성이 높은 INCI 성분만 분리한다.\n"
+        "- Water, Glycerin, Butylene Glycol, Dipropylene Glycol 등 단순 보습제·용매는\n"
+        "  홍보 이미지에서 명확히 강조된 경우가 아니면 제외한다.\n\n"
+        "출력 형식: 마크다운 없이 아래 JSON만 출력한다.\n\n"
+        "{\n"
+        "  \"representative_ingredients\": [\n"
+        "    {\n"
+        "      \"대표성분명\": \"\",\n"
+        "      \"업계표현\": \"\",\n"
+        "      \"INCI_성분\": [],\n"
+        "      \"선정근거\": \"\",\n"
+        "      \"신뢰도\": \"high | medium | low\"\n"
+        "    }\n"
+        "  ],\n"
+        "  \"not_found_or_uncertain\": [\n"
+        "    {\n"
+        "      \"홍보문구_성분명\": \"\",\n"
+        "      \"사유\": \"\"\n"
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
+        f"전성분:\n{ingredients_text}"
     )
 
     try:
         client = OpenAI()
-        content = [{"type": "input_text", "text": prompt}]
+        content = [{"type": "text", "text": prompt}]
 
-        for image_url in image_urls:
-            content.append(
-                {
-                    "type": "input_image",
-                    "image_url": image_url,
-                    "detail": "high",
-                }
-            )
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            for i, url in enumerate(image_urls):
+                if ".gif" in url.lower():
+                    continue
 
-        response = client.responses.create(
-            model=os.getenv("OPENAI_OCR_MODEL", "gpt-4.1-mini"),
-            input=[
-                {
-                    "role": "user",
-                    "content": content,
-                }
-            ],
-            max_output_tokens=80,
+                try:
+                    res = requests.get(
+                        url,
+                        headers={"User-Agent": "Mozilla/5.0"},
+                        timeout=20,
+                    )
+                    res.raise_for_status()
+
+                    img_path = os.path.join(tmp_dir, f"img_{i}.jpg")
+                    with open(img_path, "wb") as f:
+                        f.write(res.content)
+
+                    b64 = base64.b64encode(res.content).decode("utf-8")
+                    content.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+                    })
+
+                except Exception as dl_err:
+                    print(f"  [이미지 다운로드 실패] {url[:80]} {str(dl_err)[:60]}")
+
+        if len(content) == 1:
+            return ""
+
+        response = client.chat.completions.create(
+            model=os.getenv("OPENAI_OCR_MODEL", "gpt-5.4-mini"),
+            messages=[{"role": "user", "content": content}],
+            max_completion_tokens=2000,
         )
 
-        return clean_main_ingredients_response(response.output_text)
+        return clean_main_ingredients_response(response.choices[0].message.content)
 
     except Exception as error:
-        if not OPENAI_CALL_WARNED:
-            print(f"[GPT OCR 실패] main_ingredients를 비워두고 계속합니다: {str(error)[:120]}")
-            OPENAI_CALL_WARNED = True
+        print(f"[GPT OCR 실패] {str(error)[:200]}")
         return ""
 
 
@@ -267,67 +373,34 @@ def get_series(df: pd.DataFrame, column: str) -> pd.Series:
     return pd.Series([""] * len(df), index=df.index)
 
 
-def crawl_date(value) -> str:
-    """
-    ISO 수집일시에서 YYYY-MM-DD 날짜만 꺼냅니다.
-    """
-    text = clean_text(value)
-
-    if not text:
-        return ""
-
-    return text[:10]
-
-
-def volume_ml_from_fields(volume_text, product_name) -> str:
-    """
-    상세페이지 용량값을 우선 사용하고, 없으면 상품명에서 mL 용량을 보조 추출합니다.
-    """
-    package = parse_volume_package(
-        volume_text=clean_text(volume_text),
-        product_name=clean_text(product_name),
-    )
-
-    unit = clean_text(package.get("unit_volume_unit")).lower()
-    value = package.get("total_volume_value")
-
-    if unit != "ml" or value is None:
-        return ""
-
-    try:
-        return f"{float(value):g}"
-    except Exception:
-        return clean_text(value)
-
-
 def to_product_info_df(df: pd.DataFrame) -> pd.DataFrame:
     """
     내부 수집용 컬럼을 요청받은 제품 CSV 스키마로 변환합니다.
     """
-    product_names = get_series(df, "상품명")
-    volume_values = get_series(df, "용량")
-    ingredients = get_series(df, "전성분")
+    from datetime import date as _date
 
-    output = pd.DataFrame(index=df.index)
-    output["date"] = get_series(df, "수집일시").map(crawl_date)
-    output["platform"] = "oliveyoung"
-    output["sort_type"] = get_series(df, "정렬")
-    output["rank"] = get_series(df, "순위")
-    output["product_name"] = product_names
-    output["brand"] = get_series(df, "브랜드")
-    output["volume_ml"] = [
-        volume_ml_from_fields(volume_text, product_name)
-        for volume_text, product_name in zip(volume_values, product_names)
-    ]
-    output["regular_price"] = get_series(df, "정가")
-    output["discount"] = get_series(df, "할인율")
-    output["sales_price"] = get_series(df, "할인가")
-    output["rating"] = get_series(df, "제품평점")
-    output["review_count"] = get_series(df, "전체리뷰수")
-    output["url"] = get_series(df, "상품링크")
-    output["main_ingredients"] = get_series(df, "주요성분")
-    output["ingredients"] = ingredients
-    output["ing_source"] = ingredients.map(ingredient_source)
+    today = _date.today().strftime("%Y-%m-%d")
+
+    output = pd.DataFrame(
+        {
+            "date": today,
+            "platform": "oliveyoung",
+            "sort_type": get_series(df, "정렬"),
+            "rank": get_series(df, "순위"),
+            "product_name": get_series(df, "상품명"),
+            "brand": get_series(df, "브랜드"),
+            "volume_ml": get_series(df, "용량"),
+            "regular_price": get_series(df, "정가"),
+            "discount": get_series(df, "할인율"),
+            "sales_price": get_series(df, "할인가"),
+            "rating": get_series(df, "제품평점"),
+            "review_count": get_series(df, "전체리뷰수"),
+            "main_ingredients": get_series(df, "주요성분"),
+            "ingredients": get_series(df, "전성분"),
+            "ing_source": get_series(df, "전성분").map(ingredient_source),
+            "url": get_series(df, "상품링크"),
+        }
+    )
 
     return output[PRODUCT_INFO_COLUMNS].fillna("")
 
@@ -341,26 +414,43 @@ def save_product_info_rows(df: pd.DataFrame, path: Path) -> None:
     info_df.to_csv(path, index=False, encoding="utf-8-sig")
 
 
-def load_product_description_images(driver, pause_seconds: float = 1.0) -> None:
+def collect_detail_image_urls(driver) -> list[str]:
     """
-    상품설명 이미지가 lazy loading으로 들어오는 경우를 대비해 상세 영역을 훑습니다.
+    상품설명 이미지 URL을 Selenium으로 직접 수집합니다.
+
+    1. '상품설명 더보기' 버튼 클릭
+    2. .speedycat-container img에서 data-src 또는 src 추출
     """
-    pause = min(max(pause_seconds, 0.5), 1.5)
+    time.sleep(2)
 
     try:
-        driver.execute_script(LOAD_DETAIL_IMAGES_JS)
+        buttons = driver.find_elements(By.TAG_NAME, "button")
+        for btn in buttons:
+            if "상품설명 더보기" in btn.text:
+                driver.execute_script("arguments[0].click();", btn)
+                time.sleep(2)
+                break
     except Exception:
         pass
 
-    for ratio in (0.25, 0.45, 0.65):
-        driver.execute_script(
-            "window.scrollTo(0, document.body.scrollHeight * arguments[0]);",
-            ratio,
-        )
-        time.sleep(pause)
+    images = driver.find_elements(By.CSS_SELECTOR, ".speedycat-container img")
 
-    driver.execute_script("window.scrollTo(0, 0);")
-    time.sleep(0.3)
+    seen: set[str] = set()
+    urls: list[str] = []
+
+    for img in images:
+        src = img.get_attribute("src")
+        data_src = img.get_attribute("data-src")
+        url = data_src or src
+
+        if not url or url == "null" or "base64" in url:
+            continue
+
+        if url not in seen:
+            seen.add(url)
+            urls.append(url)
+
+    return urls
 
 
 def get_detail(
@@ -435,13 +525,14 @@ def get_detail(
             except Exception as error:
                 print(f"  [상세] 상품정보 제공고시 버튼 확인 실패: {str(error)[:80]}")
 
-            try:
-                load_product_description_images(driver, detail_delay_seconds)
-            except Exception as error:
-                print(f"  [상세] 상품설명 이미지 로딩 확인 실패: {str(error)[:80]}")
-
             soup = BeautifulSoup(driver.page_source, "html.parser")
             detail = build_detail_dict(soup)
+
+            try:
+                image_urls = collect_detail_image_urls(driver)
+                detail["상세이미지_URLS"] = json.dumps(image_urls, ensure_ascii=False)
+            except Exception as error:
+                print(f"  [상세] 이미지 수집 실패: {str(error)[:80]}")
 
             ingredient_text = detail.get("전성분", "")
 
@@ -588,6 +679,10 @@ def collect_sort_products(
             access_check_timeout_seconds=config.access_check_timeout_seconds,
         )
 
+        # 상세 페이지에서 용량을 못 찾은 경우 상품명에서 재시도
+        if not detail.get("용량", ""):
+            detail["용량"] = extract_volume_from_text(product_name)
+
         detail["주요성분"] = extract_main_ingredients_with_gpt_ocr(
             product_name=product_name,
             image_urls=parse_detail_image_urls(detail.get("상세이미지_URLS", "[]")),
@@ -598,15 +693,8 @@ def collect_sort_products(
             df.at[index, column] = value
 
         processed_count = index + 1
-
-        if (
-            config.interim_save_interval > 0
-            and processed_count % config.interim_save_interval == 0
-        ):
-            save_product_info_rows(df.iloc[:processed_count], save_path)
-            print(f"[상품 CSV 중간 저장] {save_path} ({processed_count}개)")
-
-    save_product_info_rows(df, save_path)
+        save_product_info_rows(df.iloc[:processed_count], save_path)
+        print(f"[상품 CSV 저장] {processed_count}/{len(df)}개 → {save_path.name}")
 
     print(f"[상품 CSV 저장 완료] {save_path}")
 

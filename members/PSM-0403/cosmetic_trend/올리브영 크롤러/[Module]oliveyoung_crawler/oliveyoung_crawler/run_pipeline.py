@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .common import parse_sorts
 from .config import DEFAULT_DB_PATH, ProductCrawlConfig, ReviewCrawlConfig
 from .db_importer import import_to_database
 from .product_collector import run as run_product_collector
@@ -17,10 +16,11 @@ from .review_collector import run as run_review_collector
 # - 전체 실행 순서 관리
 #
 # 전체 흐름:
-# 1. 정렬별 상품 수집
-# 2. 해당 정렬 리뷰 수집
-# 3. 다음 정렬 반복
-# 4. DB 적재
+# 1. 상품 수집
+# 2. 상품 CSV 생성
+# 3. 리뷰 수집
+# 4. 리뷰 CSV 생성
+# 5. DB 적재
 #
 # 이 파일은 실제 수집 로직을 직접 들고 있지 않습니다.
 # 각 모듈을 순서대로 호출하는 조정자 역할입니다.
@@ -36,11 +36,11 @@ def parse_args() -> argparse.Namespace:
         description="올리브영 상품/리뷰 수집 후 DB 적재까지 실행합니다."
     )
 
-    parser.add_argument("--total-pages", type=int, default=2)
+    parser.add_argument("--total-pages", type=int, default=1)
     parser.add_argument("--max-products", type=int, default=24)
     parser.add_argument("--major-category", default="스킨케어")
     parser.add_argument("--middle-category", default="에센스/세럼/앰플")
-    parser.add_argument("--sorts", default="best,new")
+    parser.add_argument("--sorts", default="best")
     parser.add_argument("--interim-save-interval", type=int, default=50)
 
     parser.add_argument("--reviews-per-product", type=int, default=10)
@@ -52,12 +52,6 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
-    parser.add_argument(
-        "--review-only-product-csv",
-        type=Path,
-        default=None,
-        help="기존 상품 CSV를 사용해서 리뷰만 다시 수집합니다.",
-    )
 
     parser.add_argument(
         "--skip-reviews",
@@ -80,120 +74,133 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def run_pipeline(
+    *,
+    total_pages: int = 1,
+    max_products: int | None = 24,
+    major_category: str = "스킨케어",
+    middle_category: str = "에센스/세럼/앰플",
+    sorts: str = "best",
+    reviews_per_product: int = 10,
+    chrome_version: int | None = 147,
+    headless: bool = False,
+    skip_reviews: bool = False,
+    skip_import: bool = True,
+    interim_save_interval: int = 50,
+    access_check_timeout_seconds: int = 180,
+    output_dir: Path | None = None,
+    db_path: Path = DEFAULT_DB_PATH,
+    no_analyze_ingredients: bool = False,
+) -> None:
+    """
+    main.py 상단 상수에서 호출하는 파이프라인 진입점입니다.
+    """
+
+    class _Args:
+        pass
+
+    args = _Args()
+    args.total_pages = total_pages
+    args.max_products = max_products
+    args.major_category = major_category
+    args.middle_category = middle_category
+    args.sorts = sorts
+    args.reviews_per_product = reviews_per_product
+    args.chrome_version = chrome_version
+    args.headless = headless
+    args.skip_reviews = skip_reviews
+    args.skip_import = skip_import
+    args.interim_save_interval = interim_save_interval
+    args.access_check_timeout_seconds = access_check_timeout_seconds
+    args.output_dir = output_dir
+    args.db_path = db_path
+    args.no_analyze_ingredients = no_analyze_ingredients
+
+    _run(args)
+
+
 def main() -> None:
     """
     전체 파이프라인 실행 함수입니다.
     """
 
     args = parse_args()
+    _run(args)
+
+
+def _run(args) -> None:
+    """
+    argparse Namespace 또는 run_pipeline()이 만든 _Args 객체를 받아 파이프라인을 실행합니다.
+    """
 
     output_dir = args.output_dir
 
-    if args.review_only_product_csv is not None:
-        review_config_kwargs = {
-            "product_csv": args.review_only_product_csv,
-            "reviews_per_product": args.reviews_per_product,
-            "sorts": args.sorts,
-            "interim_save_interval": args.interim_save_interval,
-            "chrome_version": args.chrome_version,
-            "headless": args.headless,
-            "access_check_timeout_seconds": args.access_check_timeout_seconds,
-        }
+    # 1. 상품 수집 설정
+    product_config_kwargs = {
+        "total_pages": args.total_pages,
+        "max_products": args.max_products,
+        "major_category": args.major_category,
+        "middle_category": args.middle_category,
+        "sorts": args.sorts,
+        "interim_save_interval": args.interim_save_interval,
+        "chrome_version": args.chrome_version,
+        "headless": args.headless,
+        "access_check_timeout_seconds": args.access_check_timeout_seconds,
+    }
 
-        if output_dir is not None:
-            review_config_kwargs["output_dir"] = output_dir
+    if output_dir is not None:
+        product_config_kwargs["output_dir"] = output_dir
 
-        print("=" * 70)
-        print("기존 상품 CSV로 올리브영 리뷰만 수집 시작")
-        print("=" * 70)
+    product_config = ProductCrawlConfig(**product_config_kwargs)
 
-        review_config = ReviewCrawlConfig(**review_config_kwargs)
-        review_csv = run_review_collector(review_config)
+    print("=" * 70)
+    print("1단계: 올리브영 상품 수집 시작")
+    print("=" * 70)
 
-        if args.skip_import:
-            print("\n[건너뜀] --skip-import 옵션으로 DB 적재를 생략합니다.")
-            return
+    product_csv_paths = run_product_collector(product_config)
 
-        counts = import_to_database(
-            product_csv=args.review_only_product_csv,
-            review_csv=review_csv,
-            db_path=args.db_path,
-            source_name="oliveyoung",
-            analyze_ingredients=not args.no_analyze_ingredients,
-        )
-
-        print(f"\n[DB 적재 결과] {args.review_only_product_csv.name}")
-        for key, value in counts.items():
-            print(f"- {key}: {value}")
-
-        return
-
-    crawl_outputs: list[tuple[Path, Path | None]] = []
-
-    for _, sort_name, sort_key in parse_sorts(args.sorts):
-        product_config_kwargs = {
-            "total_pages": args.total_pages,
-            "max_products": args.max_products,
-            "major_category": args.major_category,
-            "middle_category": args.middle_category,
-            "sorts": sort_key,
-            "interim_save_interval": args.interim_save_interval,
-            "chrome_version": args.chrome_version,
-            "headless": args.headless,
-            "access_check_timeout_seconds": args.access_check_timeout_seconds,
-        }
-
-        if output_dir is not None:
-            product_config_kwargs["output_dir"] = output_dir
-
-        product_config = ProductCrawlConfig(**product_config_kwargs)
-
-        print("=" * 70)
-        print(f"[{sort_name}] 올리브영 상품 수집 시작")
-        print("=" * 70)
-
-        product_csv_paths = run_product_collector(product_config)
-
-        if not product_csv_paths:
-            print(f"[{sort_name}] 생성된 상품 CSV가 없습니다.")
-            continue
-
-        for product_csv in product_csv_paths:
-            print(f"\n[{sort_name}] 상품 CSV: {product_csv}")
-
-            review_csv: Path | None = None
-
-            if args.skip_reviews:
-                print(f"[{sort_name}] --skip-reviews 옵션으로 리뷰 수집을 생략합니다.")
-            else:
-                print("\n" + "=" * 70)
-                print(f"[{sort_name}] 올리브영 리뷰 수집 시작")
-                print("=" * 70)
-
-                review_config_kwargs = {
-                    "product_csv": product_csv,
-                    "reviews_per_product": args.reviews_per_product,
-                    "sorts": sort_key,
-                    "interim_save_interval": args.interim_save_interval,
-                    "chrome_version": args.chrome_version,
-                    "headless": args.headless,
-                    "access_check_timeout_seconds": args.access_check_timeout_seconds,
-                }
-
-                if output_dir is not None:
-                    review_config_kwargs["output_dir"] = output_dir
-
-                review_config = ReviewCrawlConfig(**review_config_kwargs)
-                review_csv = run_review_collector(review_config)
-
-                if review_csv:
-                    print(f"\n[{sort_name}] 리뷰 CSV: {review_csv}")
-
-            crawl_outputs.append((product_csv, review_csv))
-
-    if not crawl_outputs:
+    if not product_csv_paths:
         print("[종료] 생성된 상품 CSV가 없습니다.")
         return
+
+    print("\n상품 CSV:")
+    for path in product_csv_paths:
+        print(f"- {path}")
+
+    review_csv_paths: list[Path] = []
+
+    # 2. 리뷰 수집
+    if args.skip_reviews:
+        print("\n[건너뜀] --skip-reviews 옵션으로 리뷰 수집을 생략합니다.")
+    else:
+        print("\n" + "=" * 70)
+        print("2단계: 올리브영 리뷰 수집 시작")
+        print("=" * 70)
+
+        for product_csv in product_csv_paths:
+            review_config_kwargs = {
+                "product_csv": product_csv,
+                "reviews_per_product": args.reviews_per_product,
+                "sorts": args.sorts,
+                "interim_save_interval": args.interim_save_interval,
+                "chrome_version": args.chrome_version,
+                "headless": args.headless,
+                "access_check_timeout_seconds": args.access_check_timeout_seconds,
+            }
+
+            if output_dir is not None:
+                review_config_kwargs["output_dir"] = output_dir
+
+            review_config = ReviewCrawlConfig(**review_config_kwargs)
+
+            review_csv = run_review_collector(review_config)
+
+            if review_csv:
+                review_csv_paths.append(review_csv)
+
+        print("\n리뷰 CSV:")
+        for path in review_csv_paths:
+            print(f"- {path}")
 
     # 3. DB 적재
     if args.skip_import:
@@ -204,7 +211,9 @@ def main() -> None:
     print("3단계: DB 적재 시작")
     print("=" * 70)
 
-    for product_csv, review_csv in crawl_outputs:
+    for index, product_csv in enumerate(product_csv_paths):
+        review_csv = review_csv_paths[index] if index < len(review_csv_paths) else None
+
         counts = import_to_database(
             product_csv=product_csv,
             review_csv=review_csv,

@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import pandas as pd; df = pd.read_csv\\(r'c:\\\\Users\\\\pijun\\\\Desktop\\\\올리브영_크롤러\\\\[Module]oliveyoung_crawler\\\\Data\\\\oliveyoung_판매순\\(review\\)_260505.csv', encoding='utf-8-sig'\\); print\\(df.columns.tolist\\(\\)\\); print\\(df[['product_name','main_ingredients','url']].head\\(5\\).to_string\\(\\)\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(python -c \"import sys; sys.stdout.buffer.write\\(sys.stdin.buffer.read\\(\\)\\)\")",
+      "PowerShell($path = \"c:\\\\Users\\\\pijun\\\\Desktop\\\\올리브영_크롤러1\"; $dirs = Get-ChildItem -LiteralPath $path -Directory; $dirs.FullName)"
+    ]
+  }
+}
