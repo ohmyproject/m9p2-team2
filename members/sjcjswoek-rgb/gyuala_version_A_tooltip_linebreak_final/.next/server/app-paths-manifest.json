@@ -1,0 +1,5 @@
+{
+  "/api/dashboard/datalab-weekly-interest/route": "app/api/dashboard/datalab-weekly-interest/route.js",
+  "/page": "app/page.js",
+  "/api/dashboard/page2-insights/route": "app/api/dashboard/page2-insights/route.js"
+}
